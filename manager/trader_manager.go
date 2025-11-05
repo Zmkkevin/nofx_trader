@@ -449,6 +449,54 @@ func (tm *TraderManager) StartAll() {
 	}
 }
 
+// StartRunningTraders 只启动数据库中标记为运行状态的交易员
+func (tm *TraderManager) StartRunningTraders(database *config.Database) error {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	// 获取所有用户
+	userIDs, err := database.GetAllUsers()
+	if err != nil {
+		return fmt.Errorf("获取用户列表失败: %w", err)
+	}
+
+	// 收集所有应该启动的交易员
+	var runningTraders []*config.TraderRecord
+	for _, userID := range userIDs {
+		traders, err := database.GetTraders(userID)
+		if err != nil {
+			log.Printf("⚠️ 获取用户 %s 的交易员失败: %v", userID, err)
+			continue
+		}
+		for _, trader := range traders {
+			if trader.IsRunning {
+				runningTraders = append(runningTraders, trader)
+			}
+		}
+	}
+
+	if len(runningTraders) == 0 {
+		log.Println("📋 没有需要自动启动的交易员")
+		return nil
+	}
+
+	log.Printf("🚀 自动启动 %d 个标记为运行状态的交易员...", len(runningTraders))
+	for _, traderCfg := range runningTraders {
+		if t, exists := tm.traders[traderCfg.ID]; exists {
+			go func(at *trader.AutoTrader, name string) {
+				log.Printf("▶️  启动 %s...", name)
+				if err := at.Run(); err != nil {
+					log.Printf("❌ %s 运行错误: %v", name, err)
+				}
+			}(t, traderCfg.Name)
+		} else {
+			log.Printf("⚠️  交易员 %s (ID: %s) 未加载到内存，跳过", traderCfg.Name, traderCfg.ID)
+		}
+	}
+
+	return nil
+}
+
 // StopAll 停止所有trader
 func (tm *TraderManager) StopAll() {
 	tm.mu.RLock()
