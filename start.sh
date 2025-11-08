@@ -160,6 +160,38 @@ check_encryption() {
 }
 
 # ------------------------------------------------------------------------
+# Security: Setup Secure Permissions for Sensitive Directories
+# ------------------------------------------------------------------------
+setup_secure_permissions() {
+    print_info "🔒 设置安全权限..."
+
+    # 设置敏感目录权限 (700 - 只有所有者可访问)
+    for dir in ".secrets" "secrets" "logs" "decision_logs"; do
+        if [ -d "$dir" ]; then
+            chmod 700 "$dir" 2>/dev/null && print_success "  ✓ $dir/ (700)"
+        elif [ "$dir" = "logs" ] || [ "$dir" = "decision_logs" ]; then
+            # 自动创建日志目录
+            mkdir -p "$dir" && chmod 700 "$dir" && print_success "  ✓ 已创建 $dir/ (700)"
+        fi
+    done
+
+    # 设置敏感文件权限 (600 - 只有所有者可读写)
+    for file in ".env" "config.db" ".secrets/"* "secrets/rsa_key"; do
+        if [ -f "$file" ]; then
+            chmod 600 "$file" 2>/dev/null && print_success "  ✓ $file (600)"
+        fi
+    done
+
+    # 设置日志文件权限
+    if [ -d "logs" ]; then
+        find logs -type f -name "*.log" -exec chmod 600 {} \; 2>/dev/null
+        print_success "  ✓ logs/*.log (600)"
+    fi
+
+    print_success "🔒 安全权限设置完成"
+}
+
+# ------------------------------------------------------------------------
 # Validation: Configuration File (config.json) - BASIC SETTINGS ONLY
 # ------------------------------------------------------------------------
 check_config() {
@@ -412,6 +444,7 @@ main() {
         start)
             check_env
             check_encryption
+            setup_secure_permissions
             check_config
             check_database
             start "$2"
