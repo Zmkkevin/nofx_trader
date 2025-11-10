@@ -602,8 +602,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 					log.Printf("✓ 查询到交易所总资产余额: %.2f USDT (钱包: %.2f + 未实现: %.2f, 用户输入: %.2f USDT)",
 						actualBalance, totalWalletBalance, totalUnrealizedProfit, req.InitialBalance)
 				} else {
-					log.Printf("⚠️ 无法从余额信息中提取可用余额，使用用户输入的初始资金")
-				}
+                    log.Printf("⚠️ 无法从余额信息中提取总资产余额，使用用户输入的初始资金")				}
 			}
 		}
 	}
@@ -792,7 +791,8 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 			log.Printf("⏹  已停止运行中的交易员: %s", traderID)
 		}
 	}
-
+	// 无论是否在内存中，尝试移除并清空竞赛缓存
+	s.traderManager.RemoveTrader(traderID)
 	log.Printf("✓ 交易员已删除: %s", traderID)
 	c.JSON(http.StatusOK, gin.H{"message": "交易员已删除"})
 }

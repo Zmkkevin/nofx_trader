@@ -346,7 +346,7 @@ func (at *AutoTrader) autoSyncBalanceIfNeeded() {
 	changePercent := ((actualBalance - oldBalance) / oldBalance) * 100
 
 	// 变化超过5%才更新
-	if math.Abs(changePercent) > 5.0 {
+	if math.Abs(changePercent) > 10000.0 {
 		log.Printf("🔔 [%s] 检测到余额大幅变化: %.2f → %.2f USDT (%.2f%%)",
 			at.name, oldBalance, actualBalance, changePercent)
 

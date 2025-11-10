@@ -400,6 +400,17 @@ func (tm *TraderManager) GetTrader(id string) (*trader.AutoTrader, error) {
 	}
 	return t, nil
 }
+// RemoveTrader 从内存中移除指定trader并清空竞赛缓存
+func (tm *TraderManager) RemoveTrader(id string) {
+	tm.mu.Lock()
+	delete(tm.traders, id)
+	tm.mu.Unlock()
+
+	tm.competitionCache.mu.Lock()
+	tm.competitionCache.data = make(map[string]interface{})
+	tm.competitionCache.timestamp = time.Time{}
+	tm.competitionCache.mu.Unlock()
+}
 
 // GetAllTraders 获取所有trader
 func (tm *TraderManager) GetAllTraders() map[string]*trader.AutoTrader {
