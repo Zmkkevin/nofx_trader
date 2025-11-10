@@ -52,7 +52,7 @@ func Get(symbol string) (*Data, error) {
 	// 计算当前指标 (基于3分钟最新数据)
 	currentPrice := klines3m[len(klines3m)-1].Close
 	currentEMA20 := calculateEMA(klines3m, 20)
-	currentMACD := calculateMACD(klines3m)
+	currentMACD := calculateMACD(klines3m) // 现在返回完整的MACDData结构体
 	currentRSI7 := calculateRSI(klines3m, 7)
 
 	// 计算价格变化百分比
@@ -127,10 +127,10 @@ func calculateEMA(klines []Kline, period int) float64 {
 	return ema
 }
 
-// calculateMACD 计算MACD
-func calculateMACD(klines []Kline) float64 {
+// calculateMACD 计算完整的MACD数据（MACD线、信号线、柱状图）
+func calculateMACD(klines []Kline) MACDData {
 	if len(klines) < 26 {
-		return 0
+		return MACDData{0, 0, 0}
 	}
 
 	// 计算12期和26期EMA
@@ -138,7 +138,36 @@ func calculateMACD(klines []Kline) float64 {
 	ema26 := calculateEMA(klines, 26)
 
 	// MACD = EMA12 - EMA26
-	return ema12 - ema26
+	macd := ema12 - ema26
+
+	// 计算信号线（MACD的9期EMA）
+	// 首先计算历史MACD值
+	historicalMacds := make([]float64, 0, 26)
+	for i := 25; i < len(klines); i++ {
+		histEma12 := calculateEMA(klines[:i+1], 12)
+		histEma26 := calculateEMA(klines[:i+1], 26)
+		historicalMacds = append(historicalMacds, histEma12-histEma26)
+	}
+
+	// 计算信号线
+	signal := 0.0
+	if len(historicalMacds) >= 9 {
+		// 将历史MACD值转换为临时的K线结构以使用calculateEMA
+		tempKlines := make([]Kline, len(historicalMacds))
+		for i, val := range historicalMacds {
+			tempKlines[i] = Kline{Close: val}
+		}
+		signal = calculateEMA(tempKlines, 9)
+	}
+
+	// 柱状图 = MACD - 信号线
+	histogram := macd - signal
+
+	return MACDData{
+		MACD:      macd,
+		Signal:    signal,
+		Histogram: histogram,
+	}
 }
 
 // calculateRSI 计算RSI
@@ -225,6 +254,8 @@ func calculateIntradaySeries(klines []Kline) *IntradayData {
 		MidPrices:   make([]float64, 0, 10),
 		EMA20Values: make([]float64, 0, 10),
 		MACDValues:  make([]float64, 0, 10),
+		SignalValues: make([]float64, 0, 10),
+		HistoValues: make([]float64, 0, 10),
 		RSI7Values:  make([]float64, 0, 10),
 		RSI14Values: make([]float64, 0, 10),
 		Volume:      make([]float64, 0, 10),
@@ -246,10 +277,12 @@ func calculateIntradaySeries(klines []Kline) *IntradayData {
 			data.EMA20Values = append(data.EMA20Values, ema20)
 		}
 
-		// 计算每个点的MACD
+		// 计算每个点的完整MACD数据
 		if i >= 25 {
-			macd := calculateMACD(klines[:i+1])
-			data.MACDValues = append(data.MACDValues, macd)
+			macdData := calculateMACD(klines[:i+1])
+			data.MACDValues = append(data.MACDValues, macdData.MACD)
+			data.SignalValues = append(data.SignalValues, macdData.Signal)
+			data.HistoValues = append(data.HistoValues, macdData.Histogram)
 		}
 
 		// 计算每个点的RSI
@@ -273,6 +306,8 @@ func calculateIntradaySeries(klines []Kline) *IntradayData {
 func calculateLongerTermData(klines []Kline) *LongerTermData {
 	data := &LongerTermData{
 		MACDValues:  make([]float64, 0, 10),
+		SignalValues: make([]float64, 0, 10),
+		HistoValues: make([]float64, 0, 10),
 		RSI14Values: make([]float64, 0, 10),
 	}
 
@@ -303,8 +338,10 @@ func calculateLongerTermData(klines []Kline) *LongerTermData {
 
 	for i := start; i < len(klines); i++ {
 		if i >= 25 {
-			macd := calculateMACD(klines[:i+1])
-			data.MACDValues = append(data.MACDValues, macd)
+			macdData := calculateMACD(klines[:i+1])
+			data.MACDValues = append(data.MACDValues, macdData.MACD)
+			data.SignalValues = append(data.SignalValues, macdData.Signal)
+			data.HistoValues = append(data.HistoValues, macdData.Histogram)
 		}
 		if i >= 14 {
 			rsi14 := calculateRSI(klines[:i+1], 14)
@@ -401,14 +438,14 @@ func getFundingRate(symbol string) (float64, error) {
 	return rate, nil
 }
 
-// Format 格式化输出市场数据
+// Format 格式化市场数据为字符串
 func Format(data *Data) string {
 	var sb strings.Builder
 
 	// 使用动态精度格式化价格
 	priceStr := formatPriceWithDynamicPrecision(data.CurrentPrice)
-	sb.WriteString(fmt.Sprintf("current_price = %s, current_ema20 = %.3f, current_macd = %.3f, current_rsi (7 period) = %.3f\n\n",
-		priceStr, data.CurrentEMA20, data.CurrentMACD, data.CurrentRSI7))
+	sb.WriteString(fmt.Sprintf("current_price = %s, current_ema20 = %.3f, current_macd = %.3f, signal = %.3f, histogram = %.3f, current_rsi (7 period) = %.3f\n\n",
+		priceStr, data.CurrentEMA20, data.CurrentMACD.MACD, data.CurrentMACD.Signal, data.CurrentMACD.Histogram, data.CurrentRSI7))
 
 	sb.WriteString(fmt.Sprintf("In addition, here is the latest %s open interest and funding rate for perps:\n\n",
 		data.Symbol))
@@ -436,6 +473,14 @@ func Format(data *Data) string {
 
 		if len(data.IntradaySeries.MACDValues) > 0 {
 			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.IntradaySeries.MACDValues)))
+		}
+
+		if len(data.IntradaySeries.SignalValues) > 0 {
+			sb.WriteString(fmt.Sprintf("Signal indicators: %s\n\n", formatFloatSlice(data.IntradaySeries.SignalValues)))
+		}
+
+		if len(data.IntradaySeries.HistoValues) > 0 {
+			sb.WriteString(fmt.Sprintf("Histogram indicators: %s\n\n", formatFloatSlice(data.IntradaySeries.HistoValues)))
 		}
 
 		if len(data.IntradaySeries.RSI7Values) > 0 {
@@ -467,6 +512,14 @@ func Format(data *Data) string {
 
 		if len(data.LongerTermContext.MACDValues) > 0 {
 			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.MACDValues)))
+		}
+
+		if len(data.LongerTermContext.SignalValues) > 0 {
+			sb.WriteString(fmt.Sprintf("Signal indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.SignalValues)))
+		}
+
+		if len(data.LongerTermContext.HistoValues) > 0 {
+			sb.WriteString(fmt.Sprintf("Histogram indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.HistoValues)))
 		}
 
 		if len(data.LongerTermContext.RSI14Values) > 0 {

@@ -2,6 +2,13 @@ package market
 
 import "time"
 
+// MACDData MACD数据结构
+type MACDData struct {
+	MACD        float64 // MACD线（快线）
+	Signal      float64 // 信号线（慢线）
+	Histogram   float64 // 柱状图
+}
+
 // Data 市场数据结构
 type Data struct {
 	Symbol            string
@@ -9,7 +16,7 @@ type Data struct {
 	PriceChange1h     float64 // 1小时价格变化百分比
 	PriceChange4h     float64 // 4小时价格变化百分比
 	CurrentEMA20      float64
-	CurrentMACD       float64
+	CurrentMACD       MACDData // 完整MACD数据
 	CurrentRSI7       float64
 	OpenInterest      *OIData
 	FundingRate       float64
@@ -25,11 +32,13 @@ type OIData struct {
 
 // IntradayData 日内数据(3分钟间隔)
 type IntradayData struct {
-	MidPrices   []float64
-	EMA20Values []float64
-	MACDValues  []float64
-	RSI7Values  []float64
-	RSI14Values []float64
+	MidPrices     []float64
+	EMA20Values   []float64
+	MACDValues    []float64   // MACD线值
+	SignalValues  []float64   // 信号线值
+	HistoValues   []float64   // 柱状图值
+	RSI7Values    []float64
+	RSI14Values   []float64
 	Volume      []float64
 	ATR14       float64
 }
@@ -42,7 +51,9 @@ type LongerTermData struct {
 	ATR14         float64
 	CurrentVolume float64
 	AverageVolume float64
-	MACDValues    []float64
+	MACDValues    []float64   // MACD线值
+	SignalValues  []float64   // 信号线值
+	HistoValues   []float64   // 柱状图值
 	RSI14Values   []float64
 }
 
