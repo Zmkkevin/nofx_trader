@@ -55,6 +55,12 @@ func Get(symbol string) (*Data, error) {
 	if len(klines4h) == 0 {
 		return nil, fmt.Errorf("4小时K线数据为空")
 	}
+	if len(klines15m) == 0 {
+		return nil, fmt.Errorf("15分钟K线数据为空")
+	}
+	if len(klines1h) == 0 {
+		return nil, fmt.Errorf("1小时K线数据为空")
+	}
 
 	// 计算当前指标 (基于3分钟最新数据)
 	currentPrice := klines3m[len(klines3m)-1].Close
