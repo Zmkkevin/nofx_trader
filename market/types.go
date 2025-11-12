@@ -1,18 +1,35 @@
 package market
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // MACDData MACD数据结构
 type MACDData struct {
-	MACD        float64 // MACD线（快线）
-	Signal      float64 // 信号线（慢线）
-	Histogram   float64 // 柱状图
+	MACD      float64 // MACD线（快线）
+	Signal    float64 // 信号线（慢线）
+	Histogram float64 // 柱状图
+}
+
+// FibonacciOTE 斐波那契OTE区域数据结构
+type FibonacciOTE struct {
+	Retracement382      float64 // 38.2% 回撤位
+	Retracement500      float64 // 50% 回撤位
+	Retracement618      float64 // 61.8% 回撤位
+	Extension1272       float64 // 127.2% 扩展位
+	Extension1618       float64 // 161.8% 扩展位
+	Extension2000       float64 // 200% 扩展位
+	IsAboveRetrace618   bool    // 价格是否在61.8%回撤位以上
+	IsNearExtension1272 bool    // 价格是否接近127.2%扩展位（±1%）
 }
 
 // Data 市场数据结构
 type Data struct {
 	Symbol            string
 	CurrentPrice      float64
+	PriceChange15m    float64 // 15分钟价格变化百分比
 	PriceChange1h     float64 // 1小时价格变化百分比
 	PriceChange4h     float64 // 4小时价格变化百分比
 	CurrentEMA20      float64
@@ -20,7 +37,9 @@ type Data struct {
 	CurrentRSI7       float64
 	OpenInterest      *OIData
 	FundingRate       float64
+	FibonacciOTE      *FibonacciOTE // 斐波那契OTE区域
 	IntradaySeries    *IntradayData
+	MidTermContext    *MidTermData // 15分钟时间框架数据
 	LongerTermContext *LongerTermData
 }
 
@@ -34,27 +53,182 @@ type OIData struct {
 type IntradayData struct {
 	MidPrices     []float64
 	EMA20Values   []float64
-	MACDValues    []float64   // MACD线值
-	SignalValues  []float64   // 信号线值
-	HistoValues   []float64   // 柱状图值
+	MACDValues    []float64 // MACD线值
+	SignalValues  []float64 // 信号线值
+	HistoValues   []float64 // 柱状图值
 	RSI7Values    []float64
 	RSI14Values   []float64
-	Volume      []float64
-	ATR14       float64
+	FibRetrace382 []float64 // 38.2%回撤位序列
+	FibRetrace500 []float64 // 50%回撤位序列
+	FibRetrace618 []float64 // 61.8%回撤位序列
+	Volume        []float64
+	BuySellRatios []float64 // 买卖压力比
+	ATR14         float64
+}
+
+// MidTermData 中期数据(15分钟和1小时时间框架)
+type MidTermData struct {
+	Timeframe        string // 时间框架标识("15m_1h")
+	EMA20            float64
+	ATR14            float64
+	CurrentVolume    float64
+	AverageVolume    float64
+	BuySellRatio     float64   // 买卖压力比
+	MACDValues       []float64 // MACD线值
+	SignalValues     []float64 // 信号线值
+	HistoValues      []float64 // 柱状图值
+	RSI7Values       []float64 // RSI7值
+	RSI14Values      []float64 // RSI14值
+	FibRetrace382    []float64 // 38.2%回撤位序列
+	FibRetrace500    []float64 // 50%回撤位序列
+	FibRetrace618    []float64 // 61.8%回撤位序列
+	FibExtension1272 []float64 // 127.2%扩展位序列
+	FibExtension1618 []float64 // 161.8%扩展位序列
+	FibExtension2000 []float64 // 200%扩展位序列
+}
+
+// Format 格式化中期数据为字符串
+func (m *MidTermData) Format() string {
+	if m == nil {
+		return ""
+	}
+
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("Timeframe: %s\n", m.Timeframe))
+	sb.WriteString(fmt.Sprintf("20-Period EMA: %.3f\n", m.EMA20))
+	sb.WriteString(fmt.Sprintf("14-Period ATR: %.3f\n", m.ATR14))
+	sb.WriteString(fmt.Sprintf("Current Volume: %.3f vs. Average Volume: %.3f\n", m.CurrentVolume, m.AverageVolume))
+	sb.WriteString(fmt.Sprintf("Buy/Sell Pressure Ratio (20-period): %.3f\n\n", m.BuySellRatio))
+
+	if len(m.MACDValues) > 0 {
+		sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(m.MACDValues)))
+	}
+
+	if len(m.SignalValues) > 0 {
+		sb.WriteString(fmt.Sprintf("Signal indicators: %s\n\n", formatFloatSlice(m.SignalValues)))
+	}
+
+	if len(m.HistoValues) > 0 {
+		sb.WriteString(fmt.Sprintf("Histogram indicators: %s\n\n", formatFloatSlice(m.HistoValues)))
+	}
+
+	if len(m.RSI7Values) > 0 {
+		sb.WriteString(fmt.Sprintf("RSI indicators (7-Period): %s\n\n", formatFloatSlice(m.RSI7Values)))
+	}
+
+	if len(m.RSI14Values) > 0 {
+		sb.WriteString(fmt.Sprintf("RSI indicators (14-Period): %s\n\n", formatFloatSlice(m.RSI14Values)))
+	}
+
+	// 添加斐波那契回撤和扩展数据（只显示非零值）
+	validRetrace382 := make([]float64, 0)
+	validRetrace500 := make([]float64, 0)
+	validRetrace618 := make([]float64, 0)
+	validExt1272 := make([]float64, 0)
+	validExt1618 := make([]float64, 0)
+	validExt2000 := make([]float64, 0)
+	for i, val := range m.FibRetrace382 {
+		if val > 0 && len(m.FibRetrace500) > i && len(m.FibRetrace618) > i &&
+			len(m.FibExtension1272) > i && len(m.FibExtension1618) > i && len(m.FibExtension2000) > i {
+			validRetrace382 = append(validRetrace382, val)
+			validRetrace500 = append(validRetrace500, m.FibRetrace500[i])
+			validRetrace618 = append(validRetrace618, m.FibRetrace618[i])
+			validExt1272 = append(validExt1272, m.FibExtension1272[i])
+			validExt1618 = append(validExt1618, m.FibExtension1618[i])
+			validExt2000 = append(validExt2000, m.FibExtension2000[i])
+		}
+	}
+	if len(validRetrace382) > 0 {
+		sb.WriteString(fmt.Sprintf("Fibonacci 38.2%% Retracement: %s\n", formatFloatSlice(validRetrace382)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 50.0%% Retracement: %s\n", formatFloatSlice(validRetrace500)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 61.8%% Retracement: %s\n", formatFloatSlice(validRetrace618)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 127.2%% Extension: %s\n", formatFloatSlice(validExt1272)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 161.8%% Extension: %s\n", formatFloatSlice(validExt1618)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 200.0%% Extension: %s\n\n", formatFloatSlice(validExt2000)))
+	}
+
+	return sb.String()
 }
 
 // LongerTermData 长期数据(4小时时间框架)
 type LongerTermData struct {
-	EMA20         float64
-	EMA50         float64
-	ATR3          float64
-	ATR14         float64
-	CurrentVolume float64
-	AverageVolume float64
-	MACDValues    []float64   // MACD线值
-	SignalValues  []float64   // 信号线值
-	HistoValues   []float64   // 柱状图值
-	RSI14Values   []float64
+	EMA20            float64
+	EMA50            float64
+	ATR3             float64
+	ATR14            float64
+	CurrentVolume    float64
+	AverageVolume    float64
+	BuySellRatio     float64   // 买卖压力比
+	MACDValues       []float64 // MACD线值
+	SignalValues     []float64 // 信号线值
+	HistoValues      []float64 // 柱状图值
+	RSI14Values      []float64
+	FibRetrace382    []float64 // 38.2%回撤位序列
+	FibRetrace500    []float64 // 50%回撤位序列
+	FibRetrace618    []float64 // 61.8%回撤位序列
+	FibExtension1272 []float64 // 127.2%扩展位序列
+	FibExtension1618 []float64 // 161.8%扩展位序列
+	FibExtension2000 []float64 // 200%扩展位序列
+}
+
+// Format 格式化长期数据为字符串
+func (l *LongerTermData) Format() string {
+	if l == nil {
+		return ""
+	}
+
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("20-Period EMA: %.3f vs. 50-Period EMA: %.3f\n", l.EMA20, l.EMA50))
+	sb.WriteString(fmt.Sprintf("3-Period ATR: %.3f vs. 14-Period ATR: %.3f\n", l.ATR3, l.ATR14))
+	sb.WriteString(fmt.Sprintf("Current Volume: %.3f vs. Average Volume: %.3f\n", l.CurrentVolume, l.AverageVolume))
+	sb.WriteString(fmt.Sprintf("Buy/Sell Pressure Ratio (20-period): %.3f\n\n", l.BuySellRatio))
+
+	if len(l.MACDValues) > 0 {
+		sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(l.MACDValues)))
+	}
+
+	if len(l.SignalValues) > 0 {
+		sb.WriteString(fmt.Sprintf("Signal indicators: %s\n\n", formatFloatSlice(l.SignalValues)))
+	}
+
+	if len(l.HistoValues) > 0 {
+		sb.WriteString(fmt.Sprintf("Histogram indicators: %s\n\n", formatFloatSlice(l.HistoValues)))
+	}
+
+	if len(l.RSI14Values) > 0 {
+		sb.WriteString(fmt.Sprintf("RSI indicators (14-Period): %s\n\n", formatFloatSlice(l.RSI14Values)))
+	}
+
+	// 添加斐波那契回撤和扩展数据（只显示非零值）
+	validRetrace382 := make([]float64, 0)
+	validRetrace500 := make([]float64, 0)
+	validRetrace618 := make([]float64, 0)
+	validExt1272 := make([]float64, 0)
+	validExt1618 := make([]float64, 0)
+	validExt2000 := make([]float64, 0)
+	for i, val := range l.FibRetrace382 {
+		if val > 0 && len(l.FibRetrace500) > i && len(l.FibRetrace618) > i &&
+			len(l.FibExtension1272) > i && len(l.FibExtension1618) > i && len(l.FibExtension2000) > i {
+			validRetrace382 = append(validRetrace382, val)
+			validRetrace500 = append(validRetrace500, l.FibRetrace500[i])
+			validRetrace618 = append(validRetrace618, l.FibRetrace618[i])
+			validExt1272 = append(validExt1272, l.FibExtension1272[i])
+			validExt1618 = append(validExt1618, l.FibExtension1618[i])
+			validExt2000 = append(validExt2000, l.FibExtension2000[i])
+		}
+	}
+	if len(validRetrace382) > 0 {
+		sb.WriteString(fmt.Sprintf("Fibonacci 38.2%% Retracement: %s\n", formatFloatSlice(validRetrace382)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 50.0%% Retracement: %s\n", formatFloatSlice(validRetrace500)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 61.8%% Retracement: %s\n", formatFloatSlice(validRetrace618)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 127.2%% Extension: %s\n", formatFloatSlice(validExt1272)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 161.8%% Extension: %s\n", formatFloatSlice(validExt1618)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 200.0%% Extension: %s\n\n", formatFloatSlice(validExt2000)))
+	}
+
+	return sb.String()
 }
 
 // Binance API 响应结构

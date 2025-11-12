@@ -25,7 +25,7 @@ var (
 
 // Get 获取指定代币的市场数据
 func Get(symbol string) (*Data, error) {
-	var klines3m, klines4h []Kline
+	var klines3m, klines15m, klines1h, klines4h []Kline
 	var err error
 	// 标准化symbol
 	symbol = Normalize(symbol)
@@ -33,6 +33,18 @@ func Get(symbol string) (*Data, error) {
 	klines3m, err = WSMonitorCli.GetCurrentKlines(symbol, "3m") // 多获取一些用于计算
 	if err != nil {
 		return nil, fmt.Errorf("获取3分钟K线失败: %v", err)
+	}
+
+	// 获取15分钟K线数据
+	klines15m, err = WSMonitorCli.GetCurrentKlines(symbol, "15m")
+	if err != nil {
+		return nil, fmt.Errorf("获取15分钟K线失败: %v", err)
+	}
+
+	// 获取1小时K线数据
+	klines1h, err = WSMonitorCli.GetCurrentKlines(symbol, "1h")
+	if err != nil {
+		return nil, fmt.Errorf("获取1小时K线失败: %v", err)
 	}
 
 	// 获取4小时K线数据 (最近10个)
@@ -45,6 +57,12 @@ func Get(symbol string) (*Data, error) {
 	if len(klines3m) == 0 {
 		return nil, fmt.Errorf("3分钟K线数据为空")
 	}
+	if len(klines15m) == 0 {
+		return nil, fmt.Errorf("15分钟K线数据为空")
+	}
+	if len(klines1h) == 0 {
+		return nil, fmt.Errorf("1小时K线数据为空")
+	}
 	if len(klines4h) == 0 {
 		return nil, fmt.Errorf("4小时K线数据为空")
 	}
@@ -56,10 +74,19 @@ func Get(symbol string) (*Data, error) {
 	currentRSI7 := calculateRSI(klines3m, 7)
 
 	// 计算价格变化百分比
-	// 1小时价格变化 = 20个3分钟K线前的价格
+	// 15分钟价格变化 = 1个15分钟K线前的价格
+	priceChange15m := 0.0
+	if len(klines15m) >= 2 {
+		price15mAgo := klines15m[len(klines15m)-2].Close
+		if price15mAgo > 0 {
+			priceChange15m = ((currentPrice - price15mAgo) / price15mAgo) * 100
+		}
+	}
+
+	// 1小时价格变化 = 1个1小时K线前的价格
 	priceChange1h := 0.0
-	if len(klines3m) >= 21 { // 至少需要21根K线 (当前 + 20根前)
-		price1hAgo := klines3m[len(klines3m)-21].Close
+	if len(klines1h) >= 2 {
+		price1hAgo := klines1h[len(klines1h)-2].Close
 		if price1hAgo > 0 {
 			priceChange1h = ((currentPrice - price1hAgo) / price1hAgo) * 100
 		}
@@ -87,12 +114,41 @@ func Get(symbol string) (*Data, error) {
 	// 计算日内系列数据
 	intradayData := calculateIntradaySeries(klines3m)
 
+	// 计算中期数据(15分钟和1小时)
+	midTermData15m := calculateMidTermData(klines15m, "15m")
+	midTermData1h := calculateMidTermData(klines1h, "1h")
+	
+	// 合并15分钟和1小时数据
+	midTermData := &MidTermData{
+		Timeframe:        "15m_1h",
+		EMA20:            midTermData15m.EMA20, // 使用15分钟的EMA20作为代表
+		ATR14:            midTermData1h.ATR14,  // 使用1小时的ATR14作为代表
+		CurrentVolume:    midTermData1h.CurrentVolume,
+		AverageVolume:    midTermData1h.AverageVolume,
+		BuySellRatio:     midTermData1h.BuySellRatio,
+		MACDValues:       midTermData1h.MACDValues,
+		SignalValues:     midTermData1h.SignalValues,
+		HistoValues:      midTermData1h.HistoValues,
+		RSI7Values:       midTermData15m.RSI7Values,
+		RSI14Values:      midTermData1h.RSI14Values,
+		FibRetrace382:    midTermData15m.FibRetrace382,
+		FibRetrace500:    midTermData15m.FibRetrace500,
+		FibRetrace618:    midTermData15m.FibRetrace618,
+		FibExtension1272: midTermData1h.FibExtension1272,
+		FibExtension1618: midTermData1h.FibExtension1618,
+		FibExtension2000: midTermData1h.FibExtension2000,
+	}
+
 	// 计算长期数据
 	longerTermData := calculateLongerTermData(klines4h)
+
+	// 计算斐波那契OTE区域
+	fibonacciOTE := calculateFibonacciOTE(klines4h, currentPrice)
 
 	return &Data{
 		Symbol:            symbol,
 		CurrentPrice:      currentPrice,
+		PriceChange15m:    priceChange15m,
 		PriceChange1h:     priceChange1h,
 		PriceChange4h:     priceChange4h,
 		CurrentEMA20:      currentEMA20,
@@ -100,7 +156,9 @@ func Get(symbol string) (*Data, error) {
 		CurrentRSI7:       currentRSI7,
 		OpenInterest:      oiData,
 		FundingRate:       fundingRate,
+		FibonacciOTE:      fibonacciOTE,
 		IntradaySeries:    intradayData,
+		MidTermContext:    midTermData,
 		LongerTermContext: longerTermData,
 	}, nil
 }
@@ -214,6 +272,56 @@ func calculateRSI(klines []Kline, period int) float64 {
 	return rsi
 }
 
+// calculateFibonacciOTE 计算斐波那契OTE区域
+func calculateFibonacciOTE(klines []Kline, currentPrice float64) *FibonacciOTE {
+	if len(klines) < 20 {
+		return nil
+	}
+
+	// 找出近期的高低点
+	high := klines[0].High
+	low := klines[0].Low
+	for _, kline := range klines {
+		if kline.High > high {
+			high = kline.High
+		}
+		if kline.Low < low {
+			low = kline.Low
+		}
+	}
+
+	// 计算波动范围
+	rangeSize := high - low
+
+	// 计算回撤位
+	retrace382 := high - rangeSize*0.382
+	retrace500 := high - rangeSize*0.500
+	retrace618 := high - rangeSize*0.618
+
+	// 计算扩展位
+	extension1272 := high + rangeSize*0.272
+	extension1618 := high + rangeSize*0.618
+	extension2000 := high + rangeSize*1.0
+
+	// 检查价格位置
+	isAboveRetrace618 := currentPrice > retrace618
+
+	// 检查是否接近127.2%扩展位（±1%）
+	threshold := extension1272 * 0.01
+	isNearExtension1272 := math.Abs(currentPrice-extension1272) <= threshold
+
+	return &FibonacciOTE{
+		Retracement382:      retrace382,
+		Retracement500:      retrace500,
+		Retracement618:      retrace618,
+		Extension1272:       extension1272,
+		Extension1618:       extension1618,
+		Extension2000:       extension2000,
+		IsAboveRetrace618:   isAboveRetrace618,
+		IsNearExtension1272: isNearExtension1272,
+	}
+}
+
 // calculateATR 计算ATR
 func calculateATR(klines []Kline, period int) float64 {
 	if len(klines) <= period {
@@ -248,17 +356,49 @@ func calculateATR(klines []Kline, period int) float64 {
 	return atr
 }
 
+// calculateBuySellPressureRatio 计算买卖压力比
+// 买卖压力比 = 主动买入成交量 / 总成交量
+func calculateBuySellPressureRatio(klines []Kline, period int) float64 {
+	if len(klines) < period {
+		return 0
+	}
+
+	// 获取最近period根K线
+	start := len(klines) - period
+	recentKlines := klines[start:]
+
+	// 计算主动买入成交量和总成交量
+	totalTakerBuyVolume := 0.0
+	totalVolume := 0.0
+
+	for _, kline := range recentKlines {
+		totalTakerBuyVolume += kline.TakerBuyQuoteVolume
+		totalVolume += kline.Volume
+	}
+
+	// 避免除零错误
+	if totalVolume == 0 {
+		return 0
+	}
+
+	return totalTakerBuyVolume / totalVolume
+}
+
 // calculateIntradaySeries 计算日内系列数据
 func calculateIntradaySeries(klines []Kline) *IntradayData {
 	data := &IntradayData{
-		MidPrices:   make([]float64, 0, 10),
-		EMA20Values: make([]float64, 0, 10),
-		MACDValues:  make([]float64, 0, 10),
+		MidPrices:    make([]float64, 0, 10),
+		EMA20Values:  make([]float64, 0, 10),
+		MACDValues:   make([]float64, 0, 10),
 		SignalValues: make([]float64, 0, 10),
-		HistoValues: make([]float64, 0, 10),
-		RSI7Values:  make([]float64, 0, 10),
-		RSI14Values: make([]float64, 0, 10),
+		HistoValues:  make([]float64, 0, 10),
+		RSI7Values:   make([]float64, 0, 10),
+		RSI14Values:  make([]float64, 0, 10),
+		FibRetrace382: make([]float64, 0, 10),
+		FibRetrace500: make([]float64, 0, 10),
+		FibRetrace618: make([]float64, 0, 10),
 		Volume:      make([]float64, 0, 10),
+		BuySellRatios: make([]float64, 0, 10),
 	}
 
 	// 获取最近10个数据点
@@ -294,6 +434,14 @@ func calculateIntradaySeries(klines []Kline) *IntradayData {
 			rsi14 := calculateRSI(klines[:i+1], 14)
 			data.RSI14Values = append(data.RSI14Values, rsi14)
 		}
+		
+		// 计算每个点的买卖压力比(使用最近5根K线)
+		if i >= 5 {
+			buySellRatio := calculateBuySellPressureRatio(klines[:i+1], 5)
+			data.BuySellRatios = append(data.BuySellRatios, buySellRatio)
+		} else {
+			data.BuySellRatios = append(data.BuySellRatios, 0)
+		}
 	}
 
 	// 计算3m ATR14
@@ -302,13 +450,115 @@ func calculateIntradaySeries(klines []Kline) *IntradayData {
 	return data
 }
 
+// calculateMidTermData 计算中期数据(15分钟和1小时时间框架)
+func calculateMidTermData(klines []Kline, timeframe string) *MidTermData {
+	data := &MidTermData{
+		Timeframe:        timeframe,
+		MACDValues:       make([]float64, 0, 10),
+		SignalValues:     make([]float64, 0, 10),
+		HistoValues:      make([]float64, 0, 10),
+		RSI7Values:       make([]float64, 0, 10),
+		RSI14Values:      make([]float64, 0, 10),
+		FibRetrace382:    make([]float64, 0, 10),
+		FibRetrace500:    make([]float64, 0, 10),
+		FibRetrace618:    make([]float64, 0, 10),
+		FibExtension1272: make([]float64, 0, 10),
+		FibExtension1618: make([]float64, 0, 10),
+		FibExtension2000: make([]float64, 0, 10),
+	}
+
+	// 计算EMA
+	data.EMA20 = calculateEMA(klines, 20)
+
+	// 计算ATR
+	data.ATR14 = calculateATR(klines, 14)
+
+	// 计算成交量
+	if len(klines) > 0 {
+		data.CurrentVolume = klines[len(klines)-1].Volume
+		// 计算平均成交量
+		sum := 0.0
+		for _, k := range klines {
+			sum += k.Volume
+		}
+		data.AverageVolume = sum / float64(len(klines))
+	}
+
+	// 计算买卖压力比(使用最近20根K线)
+	data.BuySellRatio = calculateBuySellPressureRatio(klines, 20)
+
+	// 计算MACD、RSI7和RSI14序列
+	start := len(klines) - 10
+	if start < 0 {
+		start = 0
+	}
+
+	for i := start; i < len(klines); i++ {
+		if i >= 25 {
+			macdData := calculateMACD(klines[:i+1])
+			data.MACDValues = append(data.MACDValues, macdData.MACD)
+			data.SignalValues = append(data.SignalValues, macdData.Signal)
+			data.HistoValues = append(data.HistoValues, macdData.Histogram)
+		}
+		if i >= 7 {
+			rsi7 := calculateRSI(klines[:i+1], 7)
+			data.RSI7Values = append(data.RSI7Values, rsi7)
+		}
+		if i >= 14 {
+			rsi14 := calculateRSI(klines[:i+1], 14)
+			data.RSI14Values = append(data.RSI14Values, rsi14)
+		}
+
+		// 计算斐波那契回撤位和扩展位
+		if i >= 20 {
+			// 找出最近20根K线的高低点
+			high := klines[i-20].High
+			low := klines[i-20].Low
+			for j := i-20; j <= i; j++ {
+				if klines[j].High > high {
+					high = klines[j].High
+				}
+				if klines[j].Low < low {
+					low = klines[j].Low
+				}
+			}
+			rangeSize := high - low
+			// 回撤位
+			data.FibRetrace382 = append(data.FibRetrace382, high-rangeSize*0.382)
+			data.FibRetrace500 = append(data.FibRetrace500, high-rangeSize*0.500)
+			data.FibRetrace618 = append(data.FibRetrace618, high-rangeSize*0.618)
+			// 扩展位
+			data.FibExtension1272 = append(data.FibExtension1272, high+rangeSize*0.272)
+			data.FibExtension1618 = append(data.FibExtension1618, high+rangeSize*0.618)
+			data.FibExtension2000 = append(data.FibExtension2000, high+rangeSize*1.0)
+		}
+		// 对于数据点不足20的情况，添加空值
+		if i < 20 {
+			data.FibRetrace382 = append(data.FibRetrace382, 0)
+			data.FibRetrace500 = append(data.FibRetrace500, 0)
+			data.FibRetrace618 = append(data.FibRetrace618, 0)
+			data.FibExtension1272 = append(data.FibExtension1272, 0)
+			data.FibExtension1618 = append(data.FibExtension1618, 0)
+			data.FibExtension2000 = append(data.FibExtension2000, 0)
+		}
+	}
+
+	return data
+}
+
 // calculateLongerTermData 计算长期数据
 func calculateLongerTermData(klines []Kline) *LongerTermData {
 	data := &LongerTermData{
-		MACDValues:  make([]float64, 0, 10),
+		MACDValues:   make([]float64, 0, 10),
 		SignalValues: make([]float64, 0, 10),
-		HistoValues: make([]float64, 0, 10),
-		RSI14Values: make([]float64, 0, 10),
+		HistoValues:  make([]float64, 0, 10),
+		RSI14Values:  make([]float64, 0, 10),
+		FibRetrace382: make([]float64, 0, 10),
+		FibRetrace500: make([]float64, 0, 10),
+		FibRetrace618: make([]float64, 0, 10),
+		FibExtension1272: make([]float64, 0, 10),
+		FibExtension1618: make([]float64, 0, 10),
+		FibExtension2000: make([]float64, 0, 10),
 	}
 
 	// 计算EMA
@@ -330,6 +580,9 @@ func calculateLongerTermData(klines []Kline) *LongerTermData {
 		data.AverageVolume = sum / float64(len(klines))
 	}
 
+	// 计算买卖压力比(使用最近20根K线)
+	data.BuySellRatio = calculateBuySellPressureRatio(klines, 20)
+
 	// 计算MACD和RSI序列
 	start := len(klines) - 10
 	if start < 0 {
@@ -346,6 +599,64 @@ func calculateLongerTermData(klines []Kline) *LongerTermData {
 		if i >= 14 {
 			rsi14 := calculateRSI(klines[:i+1], 14)
 			data.RSI14Values = append(data.RSI14Values, rsi14)
+		}
+
+		// 计算斐波那契回撤位
+		if i >= 20 {
+			// 找出最近20根K线的高低点
+			high := klines[i-20].High
+			low := klines[i-20].Low
+			for j := i-20; j <= i; j++ {
+				if klines[j].High > high {
+					high = klines[j].High
+				}
+				if klines[j].Low < low {
+					low = klines[j].Low
+				}
+			}
+			rangeSize := high - low
+			data.FibRetrace382 = append(data.FibRetrace382, high-rangeSize*0.382)
+			data.FibRetrace500 = append(data.FibRetrace500, high-rangeSize*0.500)
+			data.FibRetrace618 = append(data.FibRetrace618, high-rangeSize*0.618)
+		}
+		// 对于数据点不足20的情况，添加空值
+		if i < 20 {
+			data.FibRetrace382 = append(data.FibRetrace382, 0)
+			data.FibRetrace500 = append(data.FibRetrace500, 0)
+			data.FibRetrace618 = append(data.FibRetrace618, 0)
+		}
+
+		// 计算斐波那契回撤位和扩展位
+		if i >= 20 {
+			// 找出最近20根K线的高低点
+			high := klines[i-20].High
+			low := klines[i-20].Low
+			for j := i-20; j <= i; j++ {
+				if klines[j].High > high {
+					high = klines[j].High
+				}
+				if klines[j].Low < low {
+					low = klines[j].Low
+				}
+			}
+			rangeSize := high - low
+			// 回撤位
+			data.FibRetrace382 = append(data.FibRetrace382, high-rangeSize*0.382)
+			data.FibRetrace500 = append(data.FibRetrace500, high-rangeSize*0.500)
+			data.FibRetrace618 = append(data.FibRetrace618, high-rangeSize*0.618)
+			// 扩展位
+			data.FibExtension1272 = append(data.FibExtension1272, high+rangeSize*0.272)
+			data.FibExtension1618 = append(data.FibExtension1618, high+rangeSize*0.618)
+			data.FibExtension2000 = append(data.FibExtension2000, high+rangeSize*1.0)
+		}
+		// 对于数据点不足20的情况，添加空值
+		if i < 20 {
+			data.FibRetrace382 = append(data.FibRetrace382, 0)
+			data.FibRetrace500 = append(data.FibRetrace500, 0)
+			data.FibRetrace618 = append(data.FibRetrace618, 0)
+			data.FibExtension1272 = append(data.FibExtension1272, 0)
+			data.FibExtension1618 = append(data.FibExtension1618, 0)
+			data.FibExtension2000 = append(data.FibExtension2000, 0)
 		}
 	}
 
@@ -444,8 +755,23 @@ func Format(data *Data) string {
 
 	// 使用动态精度格式化价格
 	priceStr := formatPriceWithDynamicPrecision(data.CurrentPrice)
-	sb.WriteString(fmt.Sprintf("current_price = %s, current_ema20 = %.3f, current_macd = %.3f, signal = %.3f, histogram = %.3f, current_rsi (7 period) = %.3f\n\n",
-		priceStr, data.CurrentEMA20, data.CurrentMACD.MACD, data.CurrentMACD.Signal, data.CurrentMACD.Histogram, data.CurrentRSI7))
+	sb.WriteString(fmt.Sprintf("current_price = %s, 15m_change = %+.2f%%, 1h_change = %+.2f%%, current_ema20 = %.3f, current_macd = %.3f, signal = %.3f, histogram = %.3f, current_rsi (7 period) = %.3f\n\n",
+		priceStr, data.PriceChange15m, data.PriceChange1h, data.CurrentEMA20, data.CurrentMACD.MACD, data.CurrentMACD.Signal, data.CurrentMACD.Histogram, data.CurrentRSI7))
+	
+	// 添加斐波那契OTE区域数据
+	if data.FibonacciOTE != nil {
+		sb.WriteString("Fibonacci OTE Levels:\n\n")
+		sb.WriteString(fmt.Sprintf("38.2%% Retracement: %s\n", formatPriceWithDynamicPrecision(data.FibonacciOTE.Retracement382)))
+		sb.WriteString(fmt.Sprintf("50.0%% Retracement: %s\n", formatPriceWithDynamicPrecision(data.FibonacciOTE.Retracement500)))
+		sb.WriteString(fmt.Sprintf("61.8%% Retracement: %s\n", formatPriceWithDynamicPrecision(data.FibonacciOTE.Retracement618)))
+		sb.WriteString(fmt.Sprintf("127.2%% Extension: %s\n", formatPriceWithDynamicPrecision(data.FibonacciOTE.Extension1272)))
+		sb.WriteString(fmt.Sprintf("161.8%% Extension: %s\n", formatPriceWithDynamicPrecision(data.FibonacciOTE.Extension1618)))
+		sb.WriteString(fmt.Sprintf("200.0%% Extension: %s\n\n", formatPriceWithDynamicPrecision(data.FibonacciOTE.Extension2000)))
+		
+		sb.WriteString(fmt.Sprintf("Price Position:\n"))
+		sb.WriteString(fmt.Sprintf("Is above 61.8%% retracement: %v\n", data.FibonacciOTE.IsAboveRetrace618))
+		sb.WriteString(fmt.Sprintf("Is near 127.2%% extension: %v\n\n", data.FibonacciOTE.IsNearExtension1272))
+	}
 
 	sb.WriteString(fmt.Sprintf("In addition, here is the latest %s open interest and funding rate for perps:\n\n",
 		data.Symbol))
@@ -495,36 +821,22 @@ func Format(data *Data) string {
 			sb.WriteString(fmt.Sprintf("Volume: %s\n\n", formatFloatSlice(data.IntradaySeries.Volume)))
 		}
 
+		// 添加买卖压力比输出
+		if len(data.IntradaySeries.BuySellRatios) > 0 {
+			sb.WriteString(fmt.Sprintf("Buy/Sell Pressure Ratios (5-period): %s\n\n", formatFloatSlice(data.IntradaySeries.BuySellRatios)))
+		}
+
 		sb.WriteString(fmt.Sprintf("3m ATR (14‑period): %.3f\n\n", data.IntradaySeries.ATR14))
+	}
+
+	if data.MidTermContext != nil {
+		sb.WriteString("Mid-term context (15-minute & 1-hour timeframe):\n\n")
+		sb.WriteString(data.MidTermContext.Format())
 	}
 
 	if data.LongerTermContext != nil {
 		sb.WriteString("Longer‑term context (4‑hour timeframe):\n\n")
-
-		sb.WriteString(fmt.Sprintf("20‑Period EMA: %.3f vs. 50‑Period EMA: %.3f\n\n",
-			data.LongerTermContext.EMA20, data.LongerTermContext.EMA50))
-
-		sb.WriteString(fmt.Sprintf("3‑Period ATR: %.3f vs. 14‑Period ATR: %.3f\n\n",
-			data.LongerTermContext.ATR3, data.LongerTermContext.ATR14))
-
-		sb.WriteString(fmt.Sprintf("Current Volume: %.3f vs. Average Volume: %.3f\n\n",
-			data.LongerTermContext.CurrentVolume, data.LongerTermContext.AverageVolume))
-
-		if len(data.LongerTermContext.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.MACDValues)))
-		}
-
-		if len(data.LongerTermContext.SignalValues) > 0 {
-			sb.WriteString(fmt.Sprintf("Signal indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.SignalValues)))
-		}
-
-		if len(data.LongerTermContext.HistoValues) > 0 {
-			sb.WriteString(fmt.Sprintf("Histogram indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.HistoValues)))
-		}
-
-		if len(data.LongerTermContext.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.LongerTermContext.RSI14Values)))
-		}
+		sb.WriteString(data.LongerTermContext.Format())
 	}
 
 	return sb.String()
