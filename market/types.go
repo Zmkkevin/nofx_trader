@@ -39,7 +39,8 @@ type Data struct {
 	FundingRate       float64
 	FibonacciOTE      *FibonacciOTE // 斐波那契OTE区域
 	IntradaySeries    *IntradayData
-	MidTermContext    *MidTermData // 15分钟时间框架数据
+	MidTermContext15m *MidTermData // 15分钟时间框架数据
+	MidTermContext1h  *MidTermData // 1小时时间框架数据
 	LongerTermContext *LongerTermData
 }
 
@@ -79,12 +80,12 @@ type MidTermData struct {
 	HistoValues      []float64 // 柱状图值
 	RSI7Values       []float64 // RSI7值
 	RSI14Values      []float64 // RSI14值
-	FibRetrace382    []float64 // 38.2%回撤位序列
-	FibRetrace500    []float64 // 50%回撤位序列
-	FibRetrace618    []float64 // 61.8%回撤位序列
-	FibExtension1272 []float64 // 127.2%扩展位序列
-	FibExtension1618 []float64 // 161.8%扩展位序列
-	FibExtension2000 []float64 // 200%扩展位序列
+	FibRetrace382    float64   // 38.2%回撤位（最新值）
+	FibRetrace500    float64   // 50%回撤位（最新值）
+	FibRetrace618    float64   // 61.8%回撤位（最新值）
+	FibExtension1272 float64   // 127.2%扩展位（最新值）
+	FibExtension1618 float64   // 161.8%扩展位（最新值）
+	FibExtension2000 float64   // 200%扩展位（最新值）
 }
 
 // Format 格式化中期数据为字符串
@@ -121,31 +122,14 @@ func (m *MidTermData) Format() string {
 		sb.WriteString(fmt.Sprintf("RSI indicators (14-Period): %s\n\n", formatFloatSlice(m.RSI14Values)))
 	}
 
-	// 添加斐波那契回撤和扩展数据（只显示非零值）
-	validRetrace382 := make([]float64, 0)
-	validRetrace500 := make([]float64, 0)
-	validRetrace618 := make([]float64, 0)
-	validExt1272 := make([]float64, 0)
-	validExt1618 := make([]float64, 0)
-	validExt2000 := make([]float64, 0)
-	for i, val := range m.FibRetrace382 {
-		if val > 0 && len(m.FibRetrace500) > i && len(m.FibRetrace618) > i &&
-			len(m.FibExtension1272) > i && len(m.FibExtension1618) > i && len(m.FibExtension2000) > i {
-			validRetrace382 = append(validRetrace382, val)
-			validRetrace500 = append(validRetrace500, m.FibRetrace500[i])
-			validRetrace618 = append(validRetrace618, m.FibRetrace618[i])
-			validExt1272 = append(validExt1272, m.FibExtension1272[i])
-			validExt1618 = append(validExt1618, m.FibExtension1618[i])
-			validExt2000 = append(validExt2000, m.FibExtension2000[i])
-		}
-	}
-	if len(validRetrace382) > 0 {
-		sb.WriteString(fmt.Sprintf("Fibonacci 38.2%% Retracement: %s\n", formatFloatSlice(validRetrace382)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 50.0%% Retracement: %s\n", formatFloatSlice(validRetrace500)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 61.8%% Retracement: %s\n", formatFloatSlice(validRetrace618)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 127.2%% Extension: %s\n", formatFloatSlice(validExt1272)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 161.8%% Extension: %s\n", formatFloatSlice(validExt1618)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 200.0%% Extension: %s\n\n", formatFloatSlice(validExt2000)))
+	// 添加斐波那契回撤和扩展数据
+	if m.FibRetrace382 > 0 {
+		sb.WriteString(fmt.Sprintf("Fibonacci 38.2%% Retracement: %s\n", formatPriceWithDynamicPrecision(m.FibRetrace382)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 50.0%% Retracement: %s\n", formatPriceWithDynamicPrecision(m.FibRetrace500)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 61.8%% Retracement: %s\n", formatPriceWithDynamicPrecision(m.FibRetrace618)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 127.2%% Extension: %s\n", formatPriceWithDynamicPrecision(m.FibExtension1272)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 161.8%% Extension: %s\n", formatPriceWithDynamicPrecision(m.FibExtension1618)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 200.0%% Extension: %s\n\n", formatPriceWithDynamicPrecision(m.FibExtension2000)))
 	}
 
 	return sb.String()
@@ -164,12 +148,12 @@ type LongerTermData struct {
 	SignalValues     []float64 // 信号线值
 	HistoValues      []float64 // 柱状图值
 	RSI14Values      []float64
-	FibRetrace382    []float64 // 38.2%回撤位序列
-	FibRetrace500    []float64 // 50%回撤位序列
-	FibRetrace618    []float64 // 61.8%回撤位序列
-	FibExtension1272 []float64 // 127.2%扩展位序列
-	FibExtension1618 []float64 // 161.8%扩展位序列
-	FibExtension2000 []float64 // 200%扩展位序列
+	FibRetrace382    float64   // 38.2%回撤位（最新值）
+	FibRetrace500    float64   // 50%回撤位（最新值）
+	FibRetrace618    float64   // 61.8%回撤位（最新值）
+	FibExtension1272 float64   // 127.2%扩展位（最新值）
+	FibExtension1618 float64   // 161.8%扩展位（最新值）
+	FibExtension2000 float64   // 200%扩展位（最新值）
 }
 
 // Format 格式化长期数据为字符串
@@ -201,31 +185,14 @@ func (l *LongerTermData) Format() string {
 		sb.WriteString(fmt.Sprintf("RSI indicators (14-Period): %s\n\n", formatFloatSlice(l.RSI14Values)))
 	}
 
-	// 添加斐波那契回撤和扩展数据（只显示非零值）
-	validRetrace382 := make([]float64, 0)
-	validRetrace500 := make([]float64, 0)
-	validRetrace618 := make([]float64, 0)
-	validExt1272 := make([]float64, 0)
-	validExt1618 := make([]float64, 0)
-	validExt2000 := make([]float64, 0)
-	for i, val := range l.FibRetrace382 {
-		if val > 0 && len(l.FibRetrace500) > i && len(l.FibRetrace618) > i &&
-			len(l.FibExtension1272) > i && len(l.FibExtension1618) > i && len(l.FibExtension2000) > i {
-			validRetrace382 = append(validRetrace382, val)
-			validRetrace500 = append(validRetrace500, l.FibRetrace500[i])
-			validRetrace618 = append(validRetrace618, l.FibRetrace618[i])
-			validExt1272 = append(validExt1272, l.FibExtension1272[i])
-			validExt1618 = append(validExt1618, l.FibExtension1618[i])
-			validExt2000 = append(validExt2000, l.FibExtension2000[i])
-		}
-	}
-	if len(validRetrace382) > 0 {
-		sb.WriteString(fmt.Sprintf("Fibonacci 38.2%% Retracement: %s\n", formatFloatSlice(validRetrace382)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 50.0%% Retracement: %s\n", formatFloatSlice(validRetrace500)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 61.8%% Retracement: %s\n", formatFloatSlice(validRetrace618)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 127.2%% Extension: %s\n", formatFloatSlice(validExt1272)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 161.8%% Extension: %s\n", formatFloatSlice(validExt1618)))
-		sb.WriteString(fmt.Sprintf("Fibonacci 200.0%% Extension: %s\n\n", formatFloatSlice(validExt2000)))
+	// 添加斐波那契回撤和扩展数据
+	if l.FibRetrace382 > 0 {
+		sb.WriteString(fmt.Sprintf("Fibonacci 38.2%% Retracement: %s\n", formatPriceWithDynamicPrecision(l.FibRetrace382)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 50.0%% Retracement: %s\n", formatPriceWithDynamicPrecision(l.FibRetrace500)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 61.8%% Retracement: %s\n", formatPriceWithDynamicPrecision(l.FibRetrace618)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 127.2%% Extension: %s\n", formatPriceWithDynamicPrecision(l.FibExtension1272)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 161.8%% Extension: %s\n", formatPriceWithDynamicPrecision(l.FibExtension1618)))
+		sb.WriteString(fmt.Sprintf("Fibonacci 200.0%% Extension: %s\n\n", formatPriceWithDynamicPrecision(l.FibExtension2000)))
 	}
 
 	return sb.String()

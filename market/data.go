@@ -117,27 +117,6 @@ func Get(symbol string) (*Data, error) {
 	// 计算中期数据(15分钟和1小时)
 	midTermData15m := calculateMidTermData(klines15m, "15m")
 	midTermData1h := calculateMidTermData(klines1h, "1h")
-	
-	// 合并15分钟和1小时数据
-	midTermData := &MidTermData{
-		Timeframe:        "15m_1h",
-		EMA20:            midTermData15m.EMA20, // 使用15分钟的EMA20作为代表
-		ATR14:            midTermData1h.ATR14,  // 使用1小时的ATR14作为代表
-		CurrentVolume:    midTermData1h.CurrentVolume,
-		AverageVolume:    midTermData1h.AverageVolume,
-		BuySellRatio:     midTermData1h.BuySellRatio,
-		MACDValues:       midTermData1h.MACDValues,
-		SignalValues:     midTermData1h.SignalValues,
-		HistoValues:      midTermData1h.HistoValues,
-		RSI7Values:       midTermData15m.RSI7Values,
-		RSI14Values:      midTermData1h.RSI14Values,
-		FibRetrace382:    midTermData15m.FibRetrace382,
-		FibRetrace500:    midTermData15m.FibRetrace500,
-		FibRetrace618:    midTermData15m.FibRetrace618,
-		FibExtension1272: midTermData1h.FibExtension1272,
-		FibExtension1618: midTermData1h.FibExtension1618,
-		FibExtension2000: midTermData1h.FibExtension2000,
-	}
 
 	// 计算长期数据
 	longerTermData := calculateLongerTermData(klines4h)
@@ -158,7 +137,8 @@ func Get(symbol string) (*Data, error) {
 		FundingRate:       fundingRate,
 		FibonacciOTE:      fibonacciOTE,
 		IntradaySeries:    intradayData,
-		MidTermContext:    midTermData,
+		MidTermContext15m: midTermData15m,
+		MidTermContext1h:  midTermData1h,
 		LongerTermContext: longerTermData,
 	}, nil
 }
@@ -372,7 +352,7 @@ func calculateBuySellPressureRatio(klines []Kline, period int) float64 {
 	totalVolume := 0.0
 
 	for _, kline := range recentKlines {
-		totalTakerBuyVolume += kline.TakerBuyQuoteVolume
+		totalTakerBuyVolume += kline.TakerBuyBaseVolume
 		totalVolume += kline.Volume
 	}
 
@@ -459,12 +439,6 @@ func calculateMidTermData(klines []Kline, timeframe string) *MidTermData {
 		HistoValues:      make([]float64, 0, 10),
 		RSI7Values:       make([]float64, 0, 10),
 		RSI14Values:      make([]float64, 0, 10),
-		FibRetrace382:    make([]float64, 0, 10),
-		FibRetrace500:    make([]float64, 0, 10),
-		FibRetrace618:    make([]float64, 0, 10),
-		FibExtension1272: make([]float64, 0, 10),
-		FibExtension1618: make([]float64, 0, 10),
-		FibExtension2000: make([]float64, 0, 10),
 	}
 
 	// 计算EMA
@@ -508,42 +482,57 @@ func calculateMidTermData(klines []Kline, timeframe string) *MidTermData {
 			rsi14 := calculateRSI(klines[:i+1], 14)
 			data.RSI14Values = append(data.RSI14Values, rsi14)
 		}
+	}
 
-		// 计算斐波那契回撤位和扩展位
-		if i >= 20 {
-			// 找出最近20根K线的高低点
-			high := klines[i-20].High
-			low := klines[i-20].Low
-			for j := i-20; j <= i; j++ {
-				if klines[j].High > high {
-					high = klines[j].High
-				}
-				if klines[j].Low < low {
-					low = klines[j].Low
-				}
+	// 计算斐波那契回撤位和扩展位（只计算最新值）
+	if len(klines) >= 20 {
+		// 找出最近20根K线的高低点
+		high := klines[len(klines)-20].High
+		low := klines[len(klines)-20].Low
+		for j := len(klines)-20; j < len(klines); j++ {
+			if klines[j].High > high {
+				high = klines[j].High
 			}
-			rangeSize := high - low
-			// 回撤位
-			data.FibRetrace382 = append(data.FibRetrace382, high-rangeSize*0.382)
-			data.FibRetrace500 = append(data.FibRetrace500, high-rangeSize*0.500)
-			data.FibRetrace618 = append(data.FibRetrace618, high-rangeSize*0.618)
-			// 扩展位
-			data.FibExtension1272 = append(data.FibExtension1272, high+rangeSize*0.272)
-			data.FibExtension1618 = append(data.FibExtension1618, high+rangeSize*0.618)
-			data.FibExtension2000 = append(data.FibExtension2000, high+rangeSize*1.0)
+			if klines[j].Low < low {
+				low = klines[j].Low
+			}
 		}
-		// 对于数据点不足20的情况，添加空值
-		if i < 20 {
-			data.FibRetrace382 = append(data.FibRetrace382, 0)
-			data.FibRetrace500 = append(data.FibRetrace500, 0)
-			data.FibRetrace618 = append(data.FibRetrace618, 0)
-			data.FibExtension1272 = append(data.FibExtension1272, 0)
-			data.FibExtension1618 = append(data.FibExtension1618, 0)
-			data.FibExtension2000 = append(data.FibExtension2000, 0)
-		}
+		rangeSize := high - low
+		// 回撤位
+		data.FibRetrace382 = high - rangeSize*0.382
+		data.FibRetrace500 = high - rangeSize*0.500
+		data.FibRetrace618 = high - rangeSize*0.618
+		// 扩展位
+		data.FibExtension1272 = high + rangeSize*0.272
+		data.FibExtension1618 = high + rangeSize*0.618
+		data.FibExtension2000 = high + rangeSize*1.0
 	}
 
 	return data
+}
+
+// isDataTooSimilar 检查15分钟和1小时数据是否过于相似
+func isDataTooSimilar(data15m, data1h *MidTermData) bool {
+	// 检查EMA20差异
+	emaDiff := math.Abs(data15m.EMA20 - data1h.EMA20)
+	emaAvg := (data15m.EMA20 + data1h.EMA20) / 2
+	emaSimilarity := emaDiff / emaAvg
+	
+	// 检查ATR14差异
+	atrDiff := math.Abs(data15m.ATR14 - data1h.ATR14)
+	atrAvg := (data15m.ATR14 + data1h.ATR14) / 2
+	atrSimilarity := atrDiff / atrAvg
+	
+	// 检查斐波那契回撤位差异
+	fibSimilarity := 0.0
+	if data15m.FibRetrace382 > 0 && data1h.FibRetrace382 > 0 {
+		fibDiff := math.Abs(data15m.FibRetrace382 - data1h.FibRetrace382)
+		fibAvg := (data15m.FibRetrace382 + data1h.FibRetrace382) / 2
+		fibSimilarity = fibDiff / fibAvg
+	}
+	
+	// 如果所有指标的相似度都小于5%，则认为数据过于相似
+	return emaSimilarity < 0.05 && atrSimilarity < 0.05 && fibSimilarity < 0.05
 }
 
 // calculateLongerTermData 计算长期数据
@@ -553,12 +542,6 @@ func calculateLongerTermData(klines []Kline) *LongerTermData {
 		SignalValues: make([]float64, 0, 10),
 		HistoValues:  make([]float64, 0, 10),
 		RSI14Values:  make([]float64, 0, 10),
-		FibRetrace382: make([]float64, 0, 10),
-		FibRetrace500: make([]float64, 0, 10),
-		FibRetrace618: make([]float64, 0, 10),
-		FibExtension1272: make([]float64, 0, 10),
-		FibExtension1618: make([]float64, 0, 10),
-		FibExtension2000: make([]float64, 0, 10),
 	}
 
 	// 计算EMA
@@ -600,64 +583,30 @@ func calculateLongerTermData(klines []Kline) *LongerTermData {
 			rsi14 := calculateRSI(klines[:i+1], 14)
 			data.RSI14Values = append(data.RSI14Values, rsi14)
 		}
+	}
 
-		// 计算斐波那契回撤位
-		if i >= 20 {
-			// 找出最近20根K线的高低点
-			high := klines[i-20].High
-			low := klines[i-20].Low
-			for j := i-20; j <= i; j++ {
-				if klines[j].High > high {
-					high = klines[j].High
-				}
-				if klines[j].Low < low {
-					low = klines[j].Low
-				}
+	// 计算斐波那契回撤位和扩展位（只计算最新值）
+	if len(klines) >= 20 {
+		// 找出最近20根K线的高低点
+		high := klines[len(klines)-20].High
+		low := klines[len(klines)-20].Low
+		for j := len(klines)-20; j < len(klines); j++ {
+			if klines[j].High > high {
+				high = klines[j].High
 			}
-			rangeSize := high - low
-			data.FibRetrace382 = append(data.FibRetrace382, high-rangeSize*0.382)
-			data.FibRetrace500 = append(data.FibRetrace500, high-rangeSize*0.500)
-			data.FibRetrace618 = append(data.FibRetrace618, high-rangeSize*0.618)
-		}
-		// 对于数据点不足20的情况，添加空值
-		if i < 20 {
-			data.FibRetrace382 = append(data.FibRetrace382, 0)
-			data.FibRetrace500 = append(data.FibRetrace500, 0)
-			data.FibRetrace618 = append(data.FibRetrace618, 0)
-		}
-
-		// 计算斐波那契回撤位和扩展位
-		if i >= 20 {
-			// 找出最近20根K线的高低点
-			high := klines[i-20].High
-			low := klines[i-20].Low
-			for j := i-20; j <= i; j++ {
-				if klines[j].High > high {
-					high = klines[j].High
-				}
-				if klines[j].Low < low {
-					low = klines[j].Low
-				}
+			if klines[j].Low < low {
+				low = klines[j].Low
 			}
-			rangeSize := high - low
-			// 回撤位
-			data.FibRetrace382 = append(data.FibRetrace382, high-rangeSize*0.382)
-			data.FibRetrace500 = append(data.FibRetrace500, high-rangeSize*0.500)
-			data.FibRetrace618 = append(data.FibRetrace618, high-rangeSize*0.618)
-			// 扩展位
-			data.FibExtension1272 = append(data.FibExtension1272, high+rangeSize*0.272)
-			data.FibExtension1618 = append(data.FibExtension1618, high+rangeSize*0.618)
-			data.FibExtension2000 = append(data.FibExtension2000, high+rangeSize*1.0)
 		}
-		// 对于数据点不足20的情况，添加空值
-		if i < 20 {
-			data.FibRetrace382 = append(data.FibRetrace382, 0)
-			data.FibRetrace500 = append(data.FibRetrace500, 0)
-			data.FibRetrace618 = append(data.FibRetrace618, 0)
-			data.FibExtension1272 = append(data.FibExtension1272, 0)
-			data.FibExtension1618 = append(data.FibExtension1618, 0)
-			data.FibExtension2000 = append(data.FibExtension2000, 0)
-		}
+		rangeSize := high - low
+		// 回撤位
+		data.FibRetrace382 = high - rangeSize*0.382
+		data.FibRetrace500 = high - rangeSize*0.500
+		data.FibRetrace618 = high - rangeSize*0.618
+		// 扩展位
+		data.FibExtension1272 = high + rangeSize*0.272
+		data.FibExtension1618 = high + rangeSize*0.618
+		data.FibExtension2000 = high + rangeSize*1.0
 	}
 
 	return data
@@ -829,9 +778,14 @@ func Format(data *Data) string {
 		sb.WriteString(fmt.Sprintf("3m ATR (14‑period): %.3f\n\n", data.IntradaySeries.ATR14))
 	}
 
-	if data.MidTermContext != nil {
-		sb.WriteString("Mid-term context (15-minute & 1-hour timeframe):\n\n")
-		sb.WriteString(data.MidTermContext.Format())
+	if data.MidTermContext15m != nil {
+		sb.WriteString("Mid-term context (15-minute timeframe):\n\n")
+		sb.WriteString(data.MidTermContext15m.Format())
+	}
+
+	if data.MidTermContext1h != nil {
+		sb.WriteString("Mid-term context (1-hour timeframe):\n\n")
+		sb.WriteString(data.MidTermContext1h.Format())
 	}
 
 	if data.LongerTermContext != nil {
