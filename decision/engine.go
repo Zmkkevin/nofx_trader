@@ -331,11 +331,12 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("# 硬约束（风险控制）\n\n")
 	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
 	sb.WriteString("2. 最多持仓: 3个币种（质量>数量）\n")
-	sb.WriteString(fmt.Sprintf("3. 单币仓位: 山寨%.0f-%.0f U | BTC/ETH %.0f-%.0f U\n",
-		accountEquity*0.8, accountEquity*1.5, accountEquity*5, accountEquity*10))
+	sb.WriteString(fmt.Sprintf("3. 单币仓位上限: 山寨%.0f U | BTC/ETH %.0f U（基于净值的仓位上限，实际开仓还需考虑可用余额）\n",
+		accountEquity*1.5, accountEquity*10))
 	sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
 	sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
-	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
+	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n")
+	sb.WriteString("7. ⚠️ **开仓保证金检查**: 开仓前必须确保 `所需保证金 ≤ 可用余额`，所需保证金 = position_size_usd / leverage + 手续费\n\n")
 
 	// 3. 输出格式 - 动态生成
 	sb.WriteString("# 输出格式 (严格遵守)\n\n")
@@ -381,10 +382,11 @@ func buildUserPrompt(ctx *Context) string {
 	}
 
 	// 账户
-	sb.WriteString(fmt.Sprintf("账户: 净值%.2f | 余额%.2f (%.1f%%) | 盈亏%+.2f%% | 保证金%.1f%% | 持仓%d个\n\n",
+	sb.WriteString(fmt.Sprintf("账户: 净值%.2f | **可用余额%.2f USDT** (%.1f%%) | 已用保证金%.2f | 盈亏%+.2f%% | 保证金使用率%.1f%% | 持仓%d个\n\n",
 		ctx.Account.TotalEquity,
 		ctx.Account.AvailableBalance,
 		(ctx.Account.AvailableBalance/ctx.Account.TotalEquity)*100,
+		ctx.Account.MarginUsed,
 		ctx.Account.TotalPnLPct,
 		ctx.Account.MarginUsedPct,
 		ctx.Account.PositionCount))
