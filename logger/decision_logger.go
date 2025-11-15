@@ -79,6 +79,8 @@ type IDecisionLogger interface {
 	GetStatistics() (*Statistics, error)
 	// AnalyzePerformance 分析最近N个周期的交易表现
 	AnalyzePerformance(lookbackCycles int) (*PerformanceAnalysis, error)
+	// SetCycleNumber 设置周期编号（用于回测恢复检查点）
+	SetCycleNumber(cycle int)
 }
 
 // DecisionLogger 决策日志记录器
@@ -107,6 +109,11 @@ func NewDecisionLogger(logDir string) IDecisionLogger {
 		logDir:      logDir,
 		cycleNumber: 0,
 	}
+}
+
+// SetCycleNumber 设置周期编号（用于回测恢复检查点）
+func (l *DecisionLogger) SetCycleNumber(cycle int) {
+	l.cycleNumber = cycle
 }
 
 // LogDecision 记录决策
