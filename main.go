@@ -6,10 +6,12 @@ import (
 	"log"
 	"nofx/api"
 	"nofx/auth"
+	"nofx/backtest"
 	"nofx/config"
 	"nofx/crypto"
 	"nofx/manager"
 	"nofx/market"
+	"nofx/mcp"
 	"nofx/pool"
 	"os"
 	"os/signal"
@@ -183,6 +185,7 @@ func main() {
 		log.Fatalf("❌ 初始化数据库失败: %v", err)
 	}
 	defer database.Close()
+	backtest.UseDatabase(database.Conn())
 
 	// 初始化加密服务
 	log.Printf("🔐 初始化加密服务...")
@@ -267,8 +270,18 @@ func main() {
 		log.Printf("✓ 已配置OI Top API")
 	}
 
-	// 创建TraderManager
+	// 创建TraderManager 与 BacktestManager
+	cfgForAI, cfgErr := config.LoadConfig("config.json")
+	if cfgErr != nil {
+		log.Printf("⚠️  加载config.json用于AI客户端失败: %v", cfgErr)
+	}
+
 	traderManager := manager.NewTraderManager()
+	mcpClient := newSharedMCPClient(cfgForAI)
+	backtestManager := backtest.NewManager(mcpClient)
+	if err := backtestManager.RestoreRuns(); err != nil {
+		log.Printf("⚠️  恢复历史回测失败: %v", err)
+	}
 
 	// 从数据库加载所有交易员到内存
 	err = traderManager.LoadTradersFromDatabase(database)
@@ -343,7 +356,7 @@ func main() {
 	}
 
 	// 创建并启动API服务器
-	apiServer := api.NewServer(traderManager, database, cryptoService, apiPort)
+	apiServer := api.NewServer(traderManager, database, cryptoService, backtestManager, apiPort)
 	go func() {
 		if err := apiServer.Start(); err != nil {
 			log.Printf("❌ API服务器错误: %v", err)
@@ -386,4 +399,9 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("👋 感谢使用AI交易系统！")
+}
+
+func newSharedMCPClient(cfg *config.Config) mcp.AIClient {
+	client := mcp.New()
+	return client
 }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+// Removed: import { useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
 import { api } from '../lib/api'
 import type {
@@ -66,7 +66,7 @@ interface AITradersPageProps {
 export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const { language } = useLanguage()
   const { user, token } = useAuth()
-  const navigate = useNavigate()
+  // Removed: const navigate = useNavigate()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showModelModal, setShowModelModal] = useState(false)
@@ -1111,7 +1111,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                         if (onTraderSelect) {
                           onTraderSelect(trader.trader_id)
                         } else {
-                          navigate(`/dashboard?trader=${trader.trader_id}`)
+                          window.location.href = `/dashboard?trader=${trader.trader_id}`
                         }
                       }}
                       className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 whitespace-nowrap"

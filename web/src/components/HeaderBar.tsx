@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Menu, X, ChevronDown } from 'lucide-react'
 import { t, type Language } from '../i18n/translations'
@@ -28,7 +27,6 @@ export default function HeaderBar({
   onLogout,
   onPageChange,
 }: HeaderBarProps) {
-  const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false)
   const [userDropdownOpen, setUserDropdownOpen] = useState(false)
@@ -64,8 +62,8 @@ export default function HeaderBar({
     <nav className="fixed top-0 w-full z-50 header-bar">
       <Container className="flex items-center justify-between h-16">
         {/* Logo */}
-        <Link
-          to="/"
+        <a
+          href="/"
           className="flex items-center gap-3 hover:opacity-80 transition-opacity cursor-pointer"
         >
           <img src="/icons/nofx.svg" alt="NOFX Logo" className="w-8 h-8" />
@@ -81,7 +79,7 @@ export default function HeaderBar({
           >
             Agentic Trading OS
           </span>
-        </Link>
+        </a>
 
         {/* Desktop Menu */}
         <div className="hidden md:flex items-center justify-between flex-1 ml-8">
@@ -92,7 +90,11 @@ export default function HeaderBar({
               <>
                 <button
                   onClick={() => {
-                    navigate('/competition')
+                    if (onPageChange) {
+                      onPageChange('competition')
+                    } else {
+                      window.location.href = '/competition'
+                    }
                   }}
                   className="text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
                   style={{
@@ -131,7 +133,11 @@ export default function HeaderBar({
 
                 <button
                   onClick={() => {
-                    navigate('/traders')
+                    if (onPageChange) {
+                      onPageChange('traders')
+                    } else {
+                      window.location.href = '/traders'
+                    }
                   }}
                   className="text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
                   style={{
@@ -170,7 +176,11 @@ export default function HeaderBar({
 
                 <button
                   onClick={() => {
-                    navigate('/dashboard')
+                    if (onPageChange) {
+                      onPageChange('trader')
+                    } else {
+                      window.location.href = '/dashboard'
+                    }
                   }}
                   className="text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
                   style={{
@@ -210,9 +220,52 @@ export default function HeaderBar({
                 <button
                   onClick={() => {
                     if (onPageChange) {
+                      onPageChange('backtest')
+                    } else {
+                      window.location.href = '/backtest'
+                    }
+                  }}
+                  className="text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
+                  style={{
+                    color:
+                      currentPage === 'backtest'
+                        ? 'var(--brand-yellow)'
+                        : 'var(--brand-light-gray)',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    position: 'relative',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (currentPage !== 'backtest') {
+                      e.currentTarget.style.color = 'var(--brand-yellow)'
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (currentPage !== 'backtest') {
+                      e.currentTarget.style.color = 'var(--brand-light-gray)'
+                    }
+                  }}
+                >
+                  {/* Background for selected state */}
+                  {currentPage === 'backtest' && (
+                    <span
+                      className="absolute inset-0 rounded-lg"
+                      style={{
+                        background: 'rgba(240, 185, 11, 0.15)',
+                        zIndex: -1,
+                      }}
+                    />
+                  )}
+
+                  {t('backtest', language)}
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (onPageChange) {
                       onPageChange('faq')
                     } else {
-                      navigate('/faq')
+                      window.location.href = '/faq'
                     }
                   }}
                   className="text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
@@ -659,7 +712,7 @@ export default function HeaderBar({
                   if (onPageChange) {
                     onPageChange('traders')
                   } else {
-                    navigate('/traders')
+                    window.location.href = '/traders'
                   }
                   setMobileMenuOpen(false)
                 }}
@@ -694,7 +747,7 @@ export default function HeaderBar({
                   if (onPageChange) {
                     onPageChange('trader')
                   } else {
-                    navigate('/dashboard')
+                    window.location.href = '/dashboard'
                   }
                   setMobileMenuOpen(false)
                 }}
@@ -727,9 +780,44 @@ export default function HeaderBar({
               <button
                 onClick={() => {
                   if (onPageChange) {
+                    onPageChange('backtest')
+                  } else {
+                    window.location.href = '/backtest'
+                  }
+                  setMobileMenuOpen(false)
+                }}
+                className="block text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500 hover:text-yellow-500"
+                style={{
+                  color:
+                    currentPage === 'backtest'
+                      ? 'var(--brand-yellow)'
+                      : 'var(--brand-light-gray)',
+                  padding: '12px 16px',
+                  borderRadius: '8px',
+                  position: 'relative',
+                  width: '100%',
+                  textAlign: 'left',
+                }}
+              >
+                {/* Background for selected state */}
+                {currentPage === 'backtest' && (
+                  <span
+                    className="absolute inset-0 rounded-lg"
+                    style={{
+                      background: 'rgba(240, 185, 11, 0.15)',
+                      zIndex: -1,
+                    }}
+                  />
+                )}
+
+                {t('backtest', language)}
+              </button>
+              <button
+                onClick={() => {
+                  if (onPageChange) {
                     onPageChange('faq')
                   } else {
-                    navigate('/faq')
+                    window.location.href = '/faq'
                   }
                   setMobileMenuOpen(false)
                 }}
