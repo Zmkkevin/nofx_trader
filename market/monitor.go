@@ -120,7 +120,11 @@ func (m *WSMonitor) initializeHistoricalData() error {
 				return
 			}
 			if len(klines15m) > 0 {
-				m.klineDataMap15m.Store(s, klines15m)
+				entry15m := &KlineCacheEntry{
+					Klines:     klines15m,
+					ReceivedAt: time.Now(),
+				}
+				m.klineDataMap15m.Store(s, entry15m)
 				log.Printf("已加载 %s 的历史K线数据-15m: %d 条", s, len(klines15m))
 			}
 
@@ -131,7 +135,11 @@ func (m *WSMonitor) initializeHistoricalData() error {
 				return
 			}
 			if len(klines1h) > 0 {
-				m.klineDataMap1h.Store(s, klines1h)
+				entry1h := &KlineCacheEntry{
+					Klines:     klines1h,
+					ReceivedAt: time.Now(),
+				}
+				m.klineDataMap1h.Store(s, entry1h)
 				log.Printf("已加载 %s 的历史K线数据-1h: %d 条", s, len(klines1h))
 			}
 
