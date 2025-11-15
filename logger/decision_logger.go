@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -81,12 +82,33 @@ type IDecisionLogger interface {
 	AnalyzePerformance(lookbackCycles int) (*PerformanceAnalysis, error)
 	// SetCycleNumber 设置周期编号（用于回测恢复检查点）
 	SetCycleNumber(cycle int)
+	// AddTradeToCache 添加交易到缓存
+	AddTradeToCache(trade TradeOutcome)
+	// GetRecentTrades 从缓存获取最近N条交易
+	GetRecentTrades(limit int) []TradeOutcome
+}
+
+// OpenPosition 记录开仓信息（用于主动维护缓存）
+type OpenPosition struct {
+	Symbol    string
+	Side      string  // long/short
+	Quantity  float64
+	EntryPrice float64
+	Leverage  int
+	OpenTime  time.Time
+	Exchange  string
 }
 
 // DecisionLogger 决策日志记录器
 type DecisionLogger struct {
-	logDir      string
-	cycleNumber int
+	logDir        string
+	cycleNumber   int
+	tradesCache   []TradeOutcome  // 交易缓存（最新的在前）
+	tradeCacheSet map[string]bool // 已缓存交易的 Set（去重用）
+	cacheMutex    sync.RWMutex    // 缓存读写锁
+	maxCacheSize  int             // 最大缓存条数
+	openPositions map[string]*OpenPosition // 当前开仓（用于主动维护）
+	positionMutex sync.RWMutex             // 持仓读写锁
 }
 
 // NewDecisionLogger 创建决策日志记录器
@@ -106,8 +128,12 @@ func NewDecisionLogger(logDir string) IDecisionLogger {
 	}
 
 	return &DecisionLogger{
-		logDir:      logDir,
-		cycleNumber: 0,
+		logDir:        logDir,
+		cycleNumber:   0,
+		tradesCache:   make([]TradeOutcome, 0, 100),
+		tradeCacheSet: make(map[string]bool, 100),
+		maxCacheSize:  100, // 缓存 100 条交易（与前端 limit 最大值一致）
+		openPositions: make(map[string]*OpenPosition),
 	}
 }
 
@@ -141,6 +167,10 @@ func (l *DecisionLogger) LogDecision(record *DecisionRecord) error {
 	}
 
 	fmt.Printf("📝 决策记录已保存: %s\n", filename)
+
+	// 🚀 主动维护：检测交易完成并更新缓存
+	l.updateCacheFromDecision(record)
+
 	return nil
 }
 
@@ -565,6 +595,9 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 							analysis.RecentTrades = append(analysis.RecentTrades, outcome)
 							analysis.TotalTrades++ // 🔧 只在完全平倉時計數
 
+							// 🚀 添加到内存缓存
+							l.AddTradeToCache(outcome)
+
 							// 分类交易
 							if accumulatedPnL > 0 {
 								analysis.WinningTrades++
@@ -624,6 +657,9 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 
 						analysis.RecentTrades = append(analysis.RecentTrades, outcome)
 						analysis.TotalTrades++
+
+						// 🚀 添加到内存缓存
+						l.AddTradeToCache(outcome)
 
 						// 分类交易
 						if totalPnL > 0 {
@@ -787,4 +823,167 @@ func (l *DecisionLogger) calculateSharpeRatio(records []*DecisionRecord) float64
 	// 注：直接返回周期级别的夏普比率（非年化），正常范围 -2 到 +2
 	sharpeRatio := meanReturn / stdDev
 	return sharpeRatio
+}
+
+// updateCacheFromDecision 从决策记录中检测交易完成并主动更新缓存
+//
+// ⚠️ LIMITATION: 暂不支持 partial_close
+// - 原因: partial_close 需要累积多次平仓的盈亏，逻辑复杂
+// - 临时方案: 依赖 AnalyzePerformance 在完全平仓时聚合 partial_close 记录并添加到缓存
+// - 相关 Issue: https://github.com/NoFxAiOS/nofx/issues/1032
+func (l *DecisionLogger) updateCacheFromDecision(record *DecisionRecord) {
+	if !record.Success || len(record.Decisions) == 0 {
+		return
+	}
+
+	for _, decision := range record.Decisions {
+		if !decision.Success {
+			continue
+		}
+
+		switch decision.Action {
+		case "open_long", "open_short":
+			// 记录开仓
+			side := "long"
+			if decision.Action == "open_short" {
+				side = "short"
+			}
+
+			l.positionMutex.Lock()
+			l.openPositions[decision.Symbol] = &OpenPosition{
+				Symbol:     decision.Symbol,
+				Side:       side,
+				Quantity:   decision.Quantity,
+				EntryPrice: decision.Price,
+				Leverage:   decision.Leverage,
+				OpenTime:   decision.Timestamp,
+				Exchange:   record.Exchange,
+			}
+			l.positionMutex.Unlock()
+
+		case "close_long", "close_short", "auto_close_long", "auto_close_short":
+			// 检测平仓，计算交易并添加到缓存
+			l.positionMutex.Lock()
+			openPos, exists := l.openPositions[decision.Symbol]
+			if !exists {
+				l.positionMutex.Unlock()
+				continue
+			}
+
+			// 计算交易结果
+			trade := l.calculateTrade(openPos, decision, record.Exchange)
+
+			// 移除已平仓的持仓
+			delete(l.openPositions, decision.Symbol)
+			l.positionMutex.Unlock()
+
+			// 添加到缓存
+			l.AddTradeToCache(trade)
+		}
+	}
+}
+
+// calculateTrade 计算完整交易的盈亏和其他指标
+func (l *DecisionLogger) calculateTrade(openPos *OpenPosition, closeDecision DecisionAction, exchange string) TradeOutcome {
+	quantity := openPos.Quantity
+	entryPrice := openPos.EntryPrice
+	exitPrice := closeDecision.Price
+	leverage := openPos.Leverage
+
+	// 计算仓位价值和保证金
+	positionValue := quantity * entryPrice
+	marginUsed := positionValue / float64(leverage)
+
+	// 计算原始盈亏（不含手续费）
+	var rawPnL float64
+	if openPos.Side == "long" {
+		rawPnL = (exitPrice - entryPrice) * quantity
+	} else { // short
+		rawPnL = (entryPrice - exitPrice) * quantity
+	}
+
+	// 计算手续费
+	takerFee := getTakerFeeRate(exchange)
+	openFee := positionValue * takerFee
+	closeFee := (quantity * exitPrice) * takerFee
+	totalFee := openFee + closeFee
+
+	// 最终盈亏 = 原始盈亏 - 手续费
+	finalPnL := rawPnL - totalFee
+
+	// 盈亏百分比（相对保证金）
+	pnlPct := (finalPnL / marginUsed) * 100
+
+	// 持仓时长
+	duration := closeDecision.Timestamp.Sub(openPos.OpenTime)
+
+	return TradeOutcome{
+		Symbol:        openPos.Symbol,
+		Side:          openPos.Side,
+		Quantity:      quantity,
+		Leverage:      leverage,
+		OpenPrice:     entryPrice,
+		ClosePrice:    exitPrice,
+		PositionValue: positionValue,
+		MarginUsed:    marginUsed,
+		PnL:           finalPnL,
+		PnLPct:        pnlPct,
+		Duration:      duration.String(),
+		OpenTime:      openPos.OpenTime,
+		CloseTime:     closeDecision.Timestamp,
+		WasStopLoss:   false, // TODO: 检测是否止损
+	}
+}
+
+// AddTradeToCache 添加交易到内存缓存（带去重）
+func (l *DecisionLogger) AddTradeToCache(trade TradeOutcome) {
+	l.cacheMutex.Lock()
+	defer l.cacheMutex.Unlock()
+
+	// 生成唯一标识：symbol_side_openTime_closeTime
+	tradeKey := fmt.Sprintf("%s_%s_%d_%d",
+		trade.Symbol,
+		trade.Side,
+		trade.OpenTime.Unix(),
+		trade.CloseTime.Unix(),
+	)
+
+	// 检查是否已存在（去重）
+	if l.tradeCacheSet[tradeKey] {
+		return // 已存在，跳过
+	}
+
+	// 插入到头部（最新的在前）
+	l.tradesCache = append([]TradeOutcome{trade}, l.tradesCache...)
+	l.tradeCacheSet[tradeKey] = true
+
+	// 限制缓存大小，超出部分丢弃
+	if len(l.tradesCache) > l.maxCacheSize {
+		// 移除最后一条记录（最旧的）
+		removedTrade := l.tradesCache[l.maxCacheSize]
+		removedKey := fmt.Sprintf("%s_%s_%d_%d",
+			removedTrade.Symbol,
+			removedTrade.Side,
+			removedTrade.OpenTime.Unix(),
+			removedTrade.CloseTime.Unix(),
+		)
+		delete(l.tradeCacheSet, removedKey) // 从 Set 中删除
+		l.tradesCache = l.tradesCache[:l.maxCacheSize]
+	}
+}
+
+// GetRecentTrades 从缓存获取最近N条交易（最新的在前）
+func (l *DecisionLogger) GetRecentTrades(limit int) []TradeOutcome {
+	l.cacheMutex.RLock()
+	defer l.cacheMutex.RUnlock()
+
+	// 如果请求数量超过缓存大小，返回所有缓存
+	if limit > len(l.tradesCache) {
+		limit = len(l.tradesCache)
+	}
+
+	// 返回副本，避免外部修改缓存
+	result := make([]TradeOutcome, limit)
+	copy(result, l.tradesCache[:limit])
+	return result
 }

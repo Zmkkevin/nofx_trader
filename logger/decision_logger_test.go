@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -487,5 +488,445 @@ func TestFeeImpactOnPerformanceMetrics(t *testing.T) {
 		if trade.PnL == 0 {
 			t.Errorf("Trade %d has zero P&L, fees may not be applied", i)
 		}
+	}
+}
+
+// TestTradesCache_AddAndGet 测试基本的添加和读取功能
+func TestTradesCache_AddAndGet(t *testing.T) {
+	logger := NewDecisionLogger("/tmp/test_cache")
+
+	// 添加 3 笔交易
+	trade1 := TradeOutcome{
+		Symbol:     "BTCUSDT",
+		Side:       "long",
+		OpenPrice:  50000,
+		ClosePrice: 51000,
+		PnL:        100,
+		OpenTime:   time.Now().Add(-2 * time.Hour),
+		CloseTime:  time.Now().Add(-1 * time.Hour),
+	}
+	trade2 := TradeOutcome{
+		Symbol:     "ETHUSDT",
+		Side:       "short",
+		OpenPrice:  3000,
+		ClosePrice: 2900,
+		PnL:        50,
+		OpenTime:   time.Now().Add(-1 * time.Hour),
+		CloseTime:  time.Now().Add(-30 * time.Minute),
+	}
+	trade3 := TradeOutcome{
+		Symbol:     "BNBUSDT",
+		Side:       "long",
+		OpenPrice:  400,
+		ClosePrice: 410,
+		PnL:        10,
+		OpenTime:   time.Now().Add(-30 * time.Minute),
+		CloseTime:  time.Now(),
+	}
+
+	logger.AddTradeToCache(trade1)
+	logger.AddTradeToCache(trade2)
+	logger.AddTradeToCache(trade3)
+
+	// 测试读取所有交易
+	trades := logger.GetRecentTrades(10)
+	if len(trades) != 3 {
+		t.Errorf("Expected 3 trades, got %d", len(trades))
+	}
+
+	// 测试限制数量
+	trades = logger.GetRecentTrades(2)
+	if len(trades) != 2 {
+		t.Errorf("Expected 2 trades, got %d", len(trades))
+	}
+
+	// 测试最新的在前（trade3 应该是第一个）
+	if trades[0].Symbol != "BNBUSDT" {
+		t.Errorf("Expected first trade to be BNBUSDT, got %s", trades[0].Symbol)
+	}
+}
+
+// TestTradesCache_SizeLimit 测试缓存大小限制
+func TestTradesCache_SizeLimit(t *testing.T) {
+	logger := NewDecisionLogger("/tmp/test_cache_limit")
+
+	// 缓存限制是 100 条，添加 120 条测试
+	maxSize := 100
+	for i := 0; i < maxSize+20; i++ {
+		trade := TradeOutcome{
+			Symbol:     "BTCUSDT",
+			Side:       "long",
+			OpenPrice:  50000,
+			ClosePrice: 51000,
+			PnL:        float64(i),
+			OpenTime:   time.Now().Add(-time.Duration(i) * time.Minute),
+			CloseTime:  time.Now(),
+		}
+		logger.AddTradeToCache(trade)
+	}
+
+	// 缓存应该只保留最新的 100 条
+	trades := logger.GetRecentTrades(maxSize + 50)
+	if len(trades) != maxSize {
+		t.Errorf("Expected cache size to be limited to %d, got %d", maxSize, len(trades))
+	}
+
+	// 最新的交易（PnL = 119）应该在第一个
+	if trades[0].PnL != float64(maxSize+19) {
+		t.Errorf("Expected first trade PnL to be %d, got %f", maxSize+19, trades[0].PnL)
+	}
+
+	// 最旧的交易（PnL = 20）应该在最后
+	if trades[len(trades)-1].PnL != 20 {
+		t.Errorf("Expected last trade PnL to be 20, got %f", trades[len(trades)-1].PnL)
+	}
+}
+
+// TestTradesCache_OrderNewestFirst 测试交易顺序（最新的在前）
+func TestTradesCache_OrderNewestFirst(t *testing.T) {
+	logger := NewDecisionLogger("/tmp/test_cache_order")
+
+	baseTime := time.Now()
+
+	// 按时间顺序添加交易
+	for i := 0; i < 5; i++ {
+		trade := TradeOutcome{
+			Symbol:     "BTCUSDT",
+			Side:       "long",
+			OpenPrice:  50000,
+			ClosePrice: 51000,
+			PnL:        float64(i),
+			OpenTime:   baseTime.Add(time.Duration(i) * time.Hour),
+			CloseTime:  baseTime.Add(time.Duration(i+1) * time.Hour),
+		}
+		logger.AddTradeToCache(trade)
+	}
+
+	trades := logger.GetRecentTrades(5)
+
+	// 验证顺序：最新的在前
+	for i := 0; i < len(trades); i++ {
+		expectedPnL := float64(4 - i) // 4, 3, 2, 1, 0
+		if trades[i].PnL != expectedPnL {
+			t.Errorf("Trade at index %d: expected PnL %f, got %f", i, expectedPnL, trades[i].PnL)
+		}
+	}
+}
+
+// TestTradesCache_ConcurrentAccess 测试并发安全
+func TestTradesCache_ConcurrentAccess(t *testing.T) {
+	logger := NewDecisionLogger("/tmp/test_cache_concurrent")
+
+	// 并发写入
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			for j := 0; j < 100; j++ {
+				trade := TradeOutcome{
+					Symbol:     "BTCUSDT",
+					Side:       "long",
+					OpenPrice:  50000,
+					ClosePrice: 51000,
+					PnL:        float64(id*100 + j),
+					OpenTime:   time.Now(),
+					CloseTime:  time.Now(),
+				}
+				logger.AddTradeToCache(trade)
+			}
+			done <- true
+		}(i)
+	}
+
+	// 并发读取
+	for i := 0; i < 5; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				logger.GetRecentTrades(10)
+			}
+			done <- true
+		}()
+	}
+
+	// 等待所有 goroutine 完成
+	for i := 0; i < 15; i++ {
+		<-done
+	}
+
+	// 验证最终缓存有数据且没有 panic
+	trades := logger.GetRecentTrades(100)
+	if len(trades) == 0 {
+		t.Error("Expected trades in cache after concurrent access")
+	}
+}
+
+// TestTradesCache_NoDuplicatesOnReAnalyze 测试重复分析不会导致缓存重复
+func TestTradesCache_NoDuplicatesOnReAnalyze(t *testing.T) {
+	// 创建临时日志目录
+	logDir := "/tmp/test_no_duplicates"
+	os.RemoveAll(logDir)
+	os.MkdirAll(logDir, 0700)
+	defer os.RemoveAll(logDir)
+
+	logger := NewDecisionLogger(logDir)
+
+	// 模拟决策记录：开仓 -> 平仓
+	baseTime := time.Now()
+	records := []*DecisionRecord{
+		// 开仓
+		{
+			Exchange:    "binance",
+			CycleNumber: 1,
+			Timestamp:   baseTime,
+			Success:     true,
+			Decisions: []DecisionAction{
+				{
+					Action:    "open_long",
+					Symbol:    "BTCUSDT",
+					Quantity:  1.0,
+					Leverage:  5,
+					Price:     50000.0,
+					Timestamp: baseTime,
+					Success:   true,
+				},
+			},
+		},
+		// 平仓
+		{
+			Exchange:    "binance",
+			CycleNumber: 2,
+			Timestamp:   baseTime.Add(30 * time.Minute),
+			Success:     true,
+			Decisions: []DecisionAction{
+				{
+					Action:    "close_long",
+					Symbol:    "BTCUSDT",
+					Price:     51000.0,
+					Timestamp: baseTime.Add(30 * time.Minute),
+					Success:   true,
+				},
+			},
+		},
+	}
+
+	// 保存决策记录到文件
+	for _, record := range records {
+		if err := logger.LogDecision(record); err != nil {
+			t.Fatalf("Failed to log decision: %v", err)
+		}
+	}
+
+	// 第一次分析
+	_, err := logger.AnalyzePerformance(10)
+	if err != nil {
+		t.Fatalf("First AnalyzePerformance failed: %v", err)
+	}
+
+	// 获取缓存
+	trades1 := logger.GetRecentTrades(10)
+	if len(trades1) != 1 {
+		t.Errorf("Expected 1 trade after first analysis, got %d", len(trades1))
+	}
+
+	// 第二次分析（模拟重新启动或定期刷新）
+	_, err = logger.AnalyzePerformance(10)
+	if err != nil {
+		t.Fatalf("Second AnalyzePerformance failed: %v", err)
+	}
+
+	// 再次获取缓存 - 应该还是 1 条，不应该重复
+	trades2 := logger.GetRecentTrades(10)
+	if len(trades2) != 1 {
+		t.Errorf("Expected 1 trade after second analysis (no duplicates), got %d", len(trades2))
+	}
+
+	// 验证缓存内容一致
+	if trades1[0].Symbol != trades2[0].Symbol ||
+		trades1[0].OpenPrice != trades2[0].OpenPrice ||
+		trades1[0].ClosePrice != trades2[0].ClosePrice {
+		t.Error("Cached trade data changed between analyses")
+	}
+}
+
+// TestLogDecision_AutoUpdateCache 测试 LogDecision 主动更新缓存
+// 核心：不调用 AnalyzePerformance，缓存应自动填充
+func TestLogDecision_AutoUpdateCache(t *testing.T) {
+	logDir := "/tmp/test_auto_update_cache"
+	os.RemoveAll(logDir)
+	defer os.RemoveAll(logDir)
+
+	logger := NewDecisionLogger(logDir)
+
+	// 模拟一笔完整交易：开仓 -> 平仓
+	openTime := time.Now().Add(-10 * time.Minute)
+	closeTime := time.Now()
+
+	// 1. 开仓 (open_long)
+	openRecord := &DecisionRecord{
+		Timestamp:   openTime,
+		CycleNumber: 1,
+		Exchange:    "hyperliquid",
+		Success:     true,
+		Decisions: []DecisionAction{
+			{
+				Action:    "open_long",
+				Symbol:    "ETHUSDT",
+				Price:     2000.0,
+				Quantity:  1.0,
+				Leverage:  5,
+				Timestamp: openTime,
+				Success:   true,
+			},
+		},
+		Positions: []PositionSnapshot{
+			{
+				Symbol:      "ETHUSDT",
+				Side:        "long",
+				PositionAmt: 1.0,
+				EntryPrice:  2000.0,
+				MarkPrice:   2000.0,
+			},
+		},
+	}
+
+	err := logger.LogDecision(openRecord)
+	if err != nil {
+		t.Fatalf("Failed to log open decision: %v", err)
+	}
+
+	// 2. 平仓 (close_long)
+	closeRecord := &DecisionRecord{
+		Timestamp:   closeTime,
+		CycleNumber: 2,
+		Exchange:    "hyperliquid",
+		Success:     true,
+		Decisions: []DecisionAction{
+			{
+				Action:    "close_long",
+				Symbol:    "ETHUSDT",
+				Price:     2100.0,
+				Quantity:  1.0,
+				Timestamp: closeTime,
+				Success:   true,
+			},
+		},
+		Positions: []PositionSnapshot{}, // 平仓后没有持仓
+	}
+
+	err = logger.LogDecision(closeRecord)
+	if err != nil {
+		t.Fatalf("Failed to log close decision: %v", err)
+	}
+
+	// 3. 关键测试：不调用 AnalyzePerformance，直接检查缓存
+	trades := logger.GetRecentTrades(10)
+
+	// 期望：缓存里应该有 1 笔交易
+	if len(trades) != 1 {
+		t.Errorf("Expected 1 trade in cache (auto-updated), got %d", len(trades))
+		return
+	}
+
+	// 验证交易数据正确
+	trade := trades[0]
+	if trade.Symbol != "ETHUSDT" {
+		t.Errorf("Expected symbol ETHUSDT, got %s", trade.Symbol)
+	}
+	if trade.Side != "long" {
+		t.Errorf("Expected side long, got %s", trade.Side)
+	}
+	if trade.OpenPrice != 2000.0 {
+		t.Errorf("Expected open price 2000.0, got %f", trade.OpenPrice)
+	}
+	if trade.ClosePrice != 2100.0 {
+		t.Errorf("Expected close price 2100.0, got %f", trade.ClosePrice)
+	}
+	if trade.PnL <= 0 {
+		t.Errorf("Expected positive profit, got %f", trade.PnL)
+	}
+}
+
+// TestLogDecision_AutoUpdateStats 测试统计信息实时维护
+func TestLogDecision_AutoUpdateStats(t *testing.T) {
+	logDir := "/tmp/test_auto_update_stats"
+	os.RemoveAll(logDir)
+	defer os.RemoveAll(logDir)
+
+	logger := NewDecisionLogger(logDir)
+
+	// 模拟两笔交易：一笔盈利，一笔亏损
+	baseTime := time.Now().Add(-1 * time.Hour)
+
+	// 交易 1：盈利 (ETHUSDT long)
+	logger.LogDecision(&DecisionRecord{
+		Timestamp:   baseTime,
+		CycleNumber: 1,
+		Exchange:    "hyperliquid",
+		Success:     true,
+		Decisions: []DecisionAction{
+			{Action: "open_long", Symbol: "ETHUSDT", Price: 2000.0, Quantity: 1.0, Timestamp: baseTime, Success: true},
+		},
+		Positions: []PositionSnapshot{{Symbol: "ETHUSDT", Side: "long", PositionAmt: 1.0, EntryPrice: 2000.0}},
+	})
+
+	logger.LogDecision(&DecisionRecord{
+		Timestamp:   baseTime.Add(10 * time.Minute),
+		CycleNumber: 2,
+		Exchange:    "hyperliquid",
+		Success:     true,
+		Decisions: []DecisionAction{
+			{Action: "close_long", Symbol: "ETHUSDT", Price: 2100.0, Quantity: 1.0, Timestamp: baseTime.Add(10 * time.Minute), Success: true},
+		},
+		Positions: []PositionSnapshot{},
+	})
+
+	// 交易 2：亏损 (BTCUSDT short)
+	logger.LogDecision(&DecisionRecord{
+		Timestamp:   baseTime.Add(20 * time.Minute),
+		CycleNumber: 3,
+		Exchange:    "hyperliquid",
+		Success:     true,
+		Decisions: []DecisionAction{
+			{Action: "open_short", Symbol: "BTCUSDT", Price: 50000.0, Quantity: 0.1, Timestamp: baseTime.Add(20 * time.Minute), Success: true},
+		},
+		Positions: []PositionSnapshot{{Symbol: "BTCUSDT", Side: "short", PositionAmt: 0.1, EntryPrice: 50000.0}},
+	})
+
+	logger.LogDecision(&DecisionRecord{
+		Timestamp:   baseTime.Add(30 * time.Minute),
+		CycleNumber: 4,
+		Exchange:    "hyperliquid",
+		Success:     true,
+		Decisions: []DecisionAction{
+			{Action: "close_short", Symbol: "BTCUSDT", Price: 51000.0, Quantity: 0.1, Timestamp: baseTime.Add(30 * time.Minute), Success: true},
+		},
+		Positions: []PositionSnapshot{},
+	})
+
+	// 关键测试：从缓存读取交易（不调用 AnalyzePerformance）
+	trades := logger.GetRecentTrades(10)
+
+	// 验证缓存有 2 笔交易
+	if len(trades) != 2 {
+		t.Errorf("Expected 2 trades in cache (auto-updated), got %d", len(trades))
+		return
+	}
+
+	// 验证交易顺序（最新的在前）
+	if trades[0].Symbol != "BTCUSDT" {
+		t.Errorf("Expected first trade to be BTCUSDT (newest), got %s", trades[0].Symbol)
+	}
+	if trades[1].Symbol != "ETHUSDT" {
+		t.Errorf("Expected second trade to be ETHUSDT (oldest), got %s", trades[1].Symbol)
+	}
+
+	// 验证盈亏计算正确
+	ethTrade := trades[1] // ETHUSDT long 盈利
+	if ethTrade.PnL <= 0 {
+		t.Errorf("Expected ETHUSDT trade to be profitable, got PnL: %f", ethTrade.PnL)
+	}
+
+	btcTrade := trades[0] // BTCUSDT short 亏损
+	if btcTrade.PnL >= 0 {
+		t.Errorf("Expected BTCUSDT trade to be loss, got PnL: %f", btcTrade.PnL)
 	}
 }
