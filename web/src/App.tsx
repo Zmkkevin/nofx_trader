@@ -571,6 +571,10 @@ function TraderDetailsPage({
               )}
             </span>
           </span>
+          <span>•</span>
+          <span>
+            Prompt: <span className="font-semibold" style={{ color: '#60a5fa' }}>{selectedTrader.system_prompt_template || '-'}</span>
+          </span>
           {status && (
             <>
               <span>•</span>
@@ -599,7 +603,13 @@ function TraderDetailsPage({
       )}
 
       {/* Account Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+        <StatCard
+          title={t('initialBalance', language)}
+          value={`${account?.initial_balance?.toFixed(2) || '0.00'} USDT`}
+          coloredSubtitle={`${account?.total_pnl !== undefined && account.total_pnl >= 0 ? '+' : ''}${account?.total_pnl?.toFixed(2) || '0.00'} USDT`}
+          positive={(account?.total_pnl ?? 0) >= 0}
+        />
         <StatCard
           title={t('totalEquity', language)}
           value={`${account?.total_equity?.toFixed(2) || '0.00'} USDT`}
@@ -892,12 +902,14 @@ function StatCard({
   change,
   positive,
   subtitle,
+  coloredSubtitle,
 }: {
   title: string
   value: string
   change?: number
   positive?: boolean
   subtitle?: string
+  coloredSubtitle?: string
 }) {
   return (
     <div className="stat-card animate-fade-in">
@@ -922,6 +934,14 @@ function StatCard({
             {positive ? '▲' : '▼'} {positive ? '+' : ''}
             {change.toFixed(2)}%
           </div>
+        </div>
+      )}
+      {coloredSubtitle && (
+        <div
+          className="text-sm mt-2 mono font-bold"
+          style={{ color: positive ? '#0ECB81' : '#F6465D' }}
+        >
+          {coloredSubtitle}
         </div>
       )}
       {subtitle && (
