@@ -105,33 +105,38 @@ func saveRunMetadataDB(meta *RunMetadata) error {
 	}
 	_, err := persistenceDB.Exec(`
 		UPDATE backtest_runs
-		SET user_id = ?, state = ?, symbol_count = ?, decision_tf = ?, processed_bars = ?, progress_pct = ?, equity_last = ?, max_drawdown_pct = ?, liquidated = ?, liquidation_note = ?, label = ?, last_error = ?, updated_at = ?
+		SET user_id = ?, state = ?, symbol_count = ?, decision_tf = ?, processed_bars = ?, progress_pct = ?, equity_last = ?, max_drawdown_pct = ?, liquidated = ?, liquidation_note = ?, prompt_variant = ?, prompt_template = ?, custom_prompt = ?, override_prompt = ?, prompt_content_snapshot = ?, label = ?, last_error = ?, updated_at = ?
 		WHERE run_id = ?
-	`, userID, string(meta.State), meta.Summary.SymbolCount, meta.Summary.DecisionTF, meta.Summary.ProcessedBars, meta.Summary.ProgressPct, meta.Summary.EquityLast, meta.Summary.MaxDrawdownPct, meta.Summary.Liquidated, meta.Summary.LiquidationNote, meta.Label, meta.LastError, updated, meta.RunID)
+	`, userID, string(meta.State), meta.Summary.SymbolCount, meta.Summary.DecisionTF, meta.Summary.ProcessedBars, meta.Summary.ProgressPct, meta.Summary.EquityLast, meta.Summary.MaxDrawdownPct, meta.Summary.Liquidated, meta.Summary.LiquidationNote, meta.Summary.PromptVariant, meta.Summary.PromptTemplate, meta.Summary.CustomPrompt, meta.Summary.OverridePrompt, meta.Summary.PromptContentSnapshot, meta.Label, meta.LastError, updated, meta.RunID)
 	return err
 }
 
 func loadRunMetadataDB(runID string) (*RunMetadata, error) {
 	var (
-		userID          string
-		state           string
-		label           string
-		lastErr         string
-		symbolCount     int
-		decisionTF      string
-		processedBars   int
-		progressPct     float64
-		equityLast      float64
-		maxDD           float64
-		liquidated      bool
-		liquidationNote string
-		createdISO      string
-		updatedISO      string
+		userID                string
+		state                 string
+		label                 string
+		lastErr               string
+		symbolCount           int
+		decisionTF            string
+		processedBars         int
+		progressPct           float64
+		equityLast            float64
+		maxDD                 float64
+		liquidated            bool
+		liquidationNote       string
+		promptVariant         string
+		promptTemplate        string
+		customPrompt          string
+		overridePrompt        bool
+		promptContentSnapshot string
+		createdISO            string
+		updatedISO            string
 	)
 	err := persistenceDB.QueryRow(`
-		SELECT user_id, state, label, last_error, symbol_count, decision_tf, processed_bars, progress_pct, equity_last, max_drawdown_pct, liquidated, liquidation_note, created_at, updated_at
+		SELECT user_id, state, label, last_error, symbol_count, decision_tf, processed_bars, progress_pct, equity_last, max_drawdown_pct, liquidated, liquidation_note, prompt_variant, prompt_template, custom_prompt, override_prompt, prompt_content_snapshot, created_at, updated_at
 		FROM backtest_runs WHERE run_id = ?
-	`, runID).Scan(&userID, &state, &label, &lastErr, &symbolCount, &decisionTF, &processedBars, &progressPct, &equityLast, &maxDD, &liquidated, &liquidationNote, &createdISO, &updatedISO)
+	`, runID).Scan(&userID, &state, &label, &lastErr, &symbolCount, &decisionTF, &processedBars, &progressPct, &equityLast, &maxDD, &liquidated, &liquidationNote, &promptVariant, &promptTemplate, &customPrompt, &overridePrompt, &promptContentSnapshot, &createdISO, &updatedISO)
 	if err != nil {
 		return nil, err
 	}
@@ -143,14 +148,19 @@ func loadRunMetadataDB(runID string) (*RunMetadata, error) {
 		Label:     label,
 		LastError: lastErr,
 		Summary: RunSummary{
-			SymbolCount:     symbolCount,
-			DecisionTF:      decisionTF,
-			ProcessedBars:   processedBars,
-			ProgressPct:     progressPct,
-			EquityLast:      equityLast,
-			MaxDrawdownPct:  maxDD,
-			Liquidated:      liquidated,
-			LiquidationNote: liquidationNote,
+			SymbolCount:           symbolCount,
+			DecisionTF:            decisionTF,
+			ProcessedBars:         processedBars,
+			ProgressPct:           progressPct,
+			EquityLast:            equityLast,
+			MaxDrawdownPct:        maxDD,
+			Liquidated:            liquidated,
+			LiquidationNote:       liquidationNote,
+			PromptVariant:         promptVariant,
+			PromptTemplate:        promptTemplate,
+			CustomPrompt:          customPrompt,
+			OverridePrompt:        overridePrompt,
+			PromptContentSnapshot: promptContentSnapshot,
 		},
 	}
 	if meta.UserID == "" {

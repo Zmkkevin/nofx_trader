@@ -337,7 +337,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 		accountEquity*1.5, accountEquity*10))
 	sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
 	sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
-	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n")
+	sb.WriteString("6. 开仓金额: **必须 ≥12 USDT** (所有币种统一规则，交易所最小名义价值 10 USDT + 20% 安全边际)\n")
 	sb.WriteString("7. ⚠️ **开仓保证金检查**: 开仓前必须确保 `所需保证金 ≤ 可用余额`，所需保证金 = position_size_usd / leverage + 手续费\n\n")
 
 	// 3. 输出格式 - 动态生成
@@ -761,18 +761,12 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 		}
 
 		// ✅ 验证最小开仓金额（防止数量格式化为 0 的错误）
-		// Binance 最小名义价值 10 USDT + 安全边际
-		const minPositionSizeGeneral = 12.0 // 10 + 20% 安全边际
-		const minPositionSizeBTCETH = 60.0  // BTC/ETH 因价格高和精度限制需要更大金额（更灵活）
+		// 交易所最小名义价值 10 USDT + 20% 安全边际
+		// 根据实际精度测试，12 USDT 对所有币种（包括 BTC/ETH）都足够，即使使用最高杠杆
+		const minPositionSize = 12.0 // 统一规则，所有币种一致
 
-		if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
-			if d.PositionSizeUSD < minPositionSizeBTCETH {
-				return fmt.Errorf("%s 开仓金额过小(%.2f USDT)，必须≥%.2f USDT（因价格高且精度限制，避免数量四舍五入为0）", d.Symbol, d.PositionSizeUSD, minPositionSizeBTCETH)
-			}
-		} else {
-			if d.PositionSizeUSD < minPositionSizeGeneral {
-				return fmt.Errorf("开仓金额过小(%.2f USDT)，必须≥%.2f USDT（Binance 最小名义价值要求）", d.PositionSizeUSD, minPositionSizeGeneral)
-			}
+		if d.PositionSizeUSD < minPositionSize {
+			return fmt.Errorf("开仓金额过小(%.2f USDT)，必须≥%.2f USDT（交易所最小名义价值 10 USDT + 20%% 安全边际）", d.PositionSizeUSD, minPositionSize)
 		}
 
 		// 验证仓位价值上限（加1%容差以避免浮点数精度问题）
@@ -854,4 +848,16 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 	}
 
 	return nil
+}
+
+// BuildPromptSnapshot 生成完整的 prompt 内容快照（用于回测记录）
+// 参数说明：
+//   - accountEquity: 账户净值
+//   - btcEthLeverage: BTC/ETH 杠杆
+//   - altcoinLeverage: 山寨币杠杆
+//   - customPrompt: 自定义 prompt
+//   - overrideBase: 是否覆盖基础 prompt
+//   - templateName: 模板名称
+func BuildPromptSnapshot(accountEquity float64, btcEthLeverage, altcoinLeverage int, customPrompt string, overrideBase bool, templateName string) string {
+	return buildSystemPromptWithCustom(accountEquity, btcEthLeverage, altcoinLeverage, customPrompt, overrideBase, templateName)
 }

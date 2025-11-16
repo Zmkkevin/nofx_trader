@@ -403,6 +403,12 @@ func (d *Database) ensureBacktestRunColumns() error {
 	if err := addColumn("backtest_runs", "last_error", "TEXT DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := addColumn("backtest_runs", "prompt_variant", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addColumn("backtest_runs", "prompt_content_snapshot", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := addColumn("backtest_trades", "leverage", "INTEGER DEFAULT 0"); err != nil {
 		return err
 	}

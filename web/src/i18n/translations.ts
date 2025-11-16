@@ -168,6 +168,8 @@ export const translations = {
       },
       detail: {
         tfAndSymbols: 'TF: {tf} · Symbols {count}',
+        promptInfo: 'Prompt',
+        promptSnapshot: 'View Full Prompt (Snapshot)',
         labelPlaceholder: 'Label note',
         saveLabel: 'Save',
         deleteLabel: 'Delete',
@@ -1193,6 +1195,8 @@ export const translations = {
       },
       detail: {
         tfAndSymbols: '周期: {tf} · 币种 {count}',
+        promptInfo: '提示词',
+        promptSnapshot: '查看完整提示词（快照）',
         labelPlaceholder: '备注标签',
         saveLabel: '保存',
         deleteLabel: '删除',

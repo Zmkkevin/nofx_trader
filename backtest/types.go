@@ -25,6 +25,8 @@ type PositionSnapshot struct {
 	LiquidationPrice float64 `json:"liquidation_price"`
 	MarginUsed       float64 `json:"margin_used"`
 	OpenTime         int64   `json:"open_time"`
+	StopLoss         float64 `json:"stop_loss,omitempty"`     // 止损价格
+	TakeProfit       float64 `json:"take_profit,omitempty"`   // 止盈价格
 }
 
 // BacktestState 表示执行过程中的实时状态（内存态）。
@@ -137,14 +139,19 @@ type RunMetadata struct {
 
 // RunSummary 为 run.json 中的 summary 字段。
 type RunSummary struct {
-	SymbolCount     int     `json:"symbol_count"`
-	DecisionTF      string  `json:"decision_tf"`
-	ProcessedBars   int     `json:"processed_bars"`
-	ProgressPct     float64 `json:"progress_pct"`
-	EquityLast      float64 `json:"equity_last"`
-	MaxDrawdownPct  float64 `json:"max_drawdown_pct"`
-	Liquidated      bool    `json:"liquidated"`
-	LiquidationNote string  `json:"liquidation_note,omitempty"`
+	SymbolCount          int    `json:"symbol_count"`
+	DecisionTF           string `json:"decision_tf"`
+	ProcessedBars        int    `json:"processed_bars"`
+	ProgressPct          float64 `json:"progress_pct"`
+	EquityLast           float64 `json:"equity_last"`
+	MaxDrawdownPct       float64 `json:"max_drawdown_pct"`
+	Liquidated           bool   `json:"liquidated"`
+	LiquidationNote      string `json:"liquidation_note,omitempty"`
+	PromptVariant        string `json:"prompt_variant,omitempty"`
+	PromptTemplate       string `json:"prompt_template,omitempty"`
+	CustomPrompt         string `json:"custom_prompt,omitempty"`
+	OverridePrompt       bool   `json:"override_prompt,omitempty"`
+	PromptContentSnapshot string `json:"prompt_content_snapshot,omitempty"` // 启动时的完整prompt内容快照
 }
 
 // StatusPayload 用于 /status API 的响应。

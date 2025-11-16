@@ -38,6 +38,8 @@ type Runner struct {
 	decisionLogger logger.IDecisionLogger
 	mcpClient      mcp.AIClient
 
+	promptSnapshot string // 启动时的完整prompt内容快照（用于保存到metadata）
+
 	statusMu sync.RWMutex
 	status   RunState
 
@@ -86,6 +88,16 @@ func NewRunner(cfg BacktestConfig, mcpClient mcp.AIClient) (*Runner, error) {
 	dLog := logger.NewDecisionLogger(decisionLogDir(cfg.RunID))
 	account := NewBacktestAccount(cfg.InitialBalance, cfg.FeeBps, cfg.SlippageBps)
 
+	// 生成 prompt 内容快照（启动时的完整prompt，用于记录）
+	promptSnapshot := decision.BuildPromptSnapshot(
+		cfg.InitialBalance,
+		cfg.Leverage.BTCETH,
+		cfg.Leverage.Altcoin,
+		cfg.CustomPrompt,
+		cfg.OverrideBasePrompt,
+		cfg.PromptTemplate,
+	)
+
 	createdAt := time.Now().UTC()
 	state := &BacktestState{
 		Positions:      make(map[string]PositionSnapshot),
@@ -121,6 +133,7 @@ func NewRunner(cfg BacktestConfig, mcpClient mcp.AIClient) (*Runner, error) {
 		account:        account,
 		decisionLogger: dLog,
 		mcpClient:      client,
+		promptSnapshot: promptSnapshot,
 		status:         RunStateCreated,
 		state:          state,
 		pauseCh:        make(chan struct{}, 1),
@@ -270,9 +283,24 @@ func (r *Runner) stepOnce() error {
 		return err
 	}
 
+	// 构建 Close/High/Low 价格映射（用于OHLC风控检查）
 	priceMap := make(map[string]float64, len(marketData))
-	for symbol, data := range marketData {
-		priceMap[symbol] = data.CurrentPrice
+	highMap := make(map[string]float64, len(marketData))
+	lowMap := make(map[string]float64, len(marketData))
+
+	for symbol := range marketData {
+		// 获取当前K线的OHLC数据
+		currentBar, _ := r.feed.decisionBarSnapshot(symbol, ts)
+		if currentBar != nil {
+			priceMap[symbol] = currentBar.Close
+			highMap[symbol] = currentBar.High
+			lowMap[symbol] = currentBar.Low
+		} else {
+			// 降级方案：使用CurrentPrice
+			priceMap[symbol] = marketData[symbol].CurrentPrice
+			highMap[symbol] = marketData[symbol].CurrentPrice
+			lowMap[symbol] = marketData[symbol].CurrentPrice
+		}
 	}
 
 	callCount := state.DecisionCycle + 1
@@ -285,6 +313,20 @@ func (r *Runner) stepOnce() error {
 		execLog         []string
 		hadError        bool
 	)
+
+	// 🔧 修复 BUG 2&3: 使用 OHLC 数据统一检查止损止盈和爆仓（在 AI 决策之前，风控优先）
+	slTpEvents, liqEvents := r.checkRiskEventsWithOHLC(priceMap, highMap, lowMap, ts, callCount)
+	tradeEvents = append(tradeEvents, slTpEvents...)
+	tradeEvents = append(tradeEvents, liqEvents...)
+	for _, evt := range slTpEvents {
+		execLog = append(execLog, fmt.Sprintf("🛑 %s", evt.Note))
+	}
+	if len(liqEvents) > 0 {
+		hadError = true
+		for _, evt := range liqEvents {
+			execLog = append(execLog, fmt.Sprintf("🚨 强平: %s", evt.Note))
+		}
+	}
 
 	decisionAttempted := shouldDecide
 
@@ -379,29 +421,28 @@ func (r *Runner) stepOnce() error {
 		cycleForLog = callCount
 	}
 
-	liquidationEvents, liquidationNote, err := r.checkLiquidation(ts, priceMap, cycleForLog)
-	if err != nil {
-		if record != nil {
-			record.Success = false
-			record.ErrorMessage = err.Error()
-			_ = r.logDecision(record)
+	// 🔧 修复 BUG 1&5: AI 决策后再次检查（捕获AI修改的止损止盈或新开仓位）
+	slTpEvents2, liqEvents2 := r.checkRiskEventsWithOHLC(priceMap, highMap, lowMap, ts, cycleForLog)
+	if len(slTpEvents2) > 0 {
+		tradeEvents = append(tradeEvents, slTpEvents2...)
+		for _, evt := range slTpEvents2 {
+			execLog = append(execLog, fmt.Sprintf("🔄 AI 决策后触发: %s", evt.Note))
 		}
-		return err
 	}
-	if len(liquidationEvents) > 0 {
+	if len(liqEvents2) > 0 {
 		hadError = true
-		tradeEvents = append(tradeEvents, liquidationEvents...)
-		if record != nil {
-			execLog = append(execLog, fmt.Sprintf("⚠️ 强制平仓: %s", liquidationNote))
+		tradeEvents = append(tradeEvents, liqEvents2...)
+		for _, evt := range liqEvents2 {
+			execLog = append(execLog, fmt.Sprintf("🚨 AI 决策后强平: %s", evt.Note))
 		}
 	}
 
 	if record != nil {
 		record.Decisions = decisionActions
 		record.ExecutionLog = execLog
-		record.Success = !hadError && liquidationNote == ""
-		if liquidationNote != "" {
-			record.ErrorMessage = liquidationNote
+		record.Success = !hadError
+		if hadError && len(liqEvents)+len(liqEvents2) > 0 {
+			record.ErrorMessage = "发生强制平仓"
 		}
 	}
 
@@ -453,7 +494,7 @@ func (r *Runner) stepOnce() error {
 	r.persistMetadata()
 	r.persistMetrics(false)
 
-	if !hadError && liquidationNote == "" {
+	if !hadError && !snapshot.Liquidated {
 		r.setLastError(nil)
 	}
 
@@ -576,7 +617,7 @@ func (r *Runner) executeDecision(dec decision.Decision, priceMap map[string]floa
 		if qty <= 0 {
 			return actionRecord, nil, "", fmt.Errorf("invalid qty")
 		}
-		pos, fee, execPrice, err := r.account.Open(symbol, "long", qty, usedLeverage, fillPrice, ts)
+		pos, fee, execPrice, err := r.account.Open(symbol, "long", qty, usedLeverage, fillPrice, dec.StopLoss, dec.TakeProfit, ts)
 		if err != nil {
 			return actionRecord, nil, "", err
 		}
@@ -605,7 +646,7 @@ func (r *Runner) executeDecision(dec decision.Decision, priceMap map[string]floa
 		if qty <= 0 {
 			return actionRecord, nil, "", fmt.Errorf("invalid qty")
 		}
-		pos, fee, execPrice, err := r.account.Open(symbol, "short", qty, usedLeverage, fillPrice, ts)
+		pos, fee, execPrice, err := r.account.Open(symbol, "short", qty, usedLeverage, fillPrice, dec.StopLoss, dec.TakeProfit, ts)
 		if err != nil {
 			return actionRecord, nil, "", err
 		}
@@ -688,6 +729,40 @@ func (r *Runner) executeDecision(dec decision.Decision, priceMap map[string]floa
 			PositionAfter: r.remainingPosition(symbol, "short"),
 		}
 		return actionRecord, []TradeEvent{trade}, "", nil
+
+	case "update_stop_loss":
+		// 尝试更新多头或空头持仓的止损
+		var err error
+		var side string
+		if err = r.account.UpdateStopLoss(symbol, "long", dec.NewStopLoss); err != nil {
+			if err = r.account.UpdateStopLoss(symbol, "short", dec.NewStopLoss); err != nil {
+				return actionRecord, nil, "", fmt.Errorf("no position to update stop loss for %s", symbol)
+			}
+			side = "short"
+		} else {
+			side = "long"
+		}
+		msg := fmt.Sprintf("更新 %s %s 止损至 %.4f", symbol, side, dec.NewStopLoss)
+		return actionRecord, nil, msg, nil
+
+	case "update_take_profit":
+		// 尝试更新多头或空头持仓的止盈
+		var err error
+		var side string
+		if err = r.account.UpdateTakeProfit(symbol, "long", dec.NewTakeProfit); err != nil {
+			if err = r.account.UpdateTakeProfit(symbol, "short", dec.NewTakeProfit); err != nil {
+				return actionRecord, nil, "", fmt.Errorf("no position to update take profit for %s", symbol)
+			}
+			side = "short"
+		} else {
+			side = "long"
+		}
+		msg := fmt.Sprintf("更新 %s %s 止盈至 %.4f", symbol, side, dec.NewTakeProfit)
+		return actionRecord, nil, msg, nil
+
+	case "partial_close":
+		// TODO: 实现部分平仓逻辑
+		return actionRecord, nil, "部分平仓暂不支持", nil
 
 	case "hold", "wait":
 		return actionRecord, nil, fmt.Sprintf("保持仓位: %s", dec.Action), nil
@@ -847,6 +922,8 @@ func (r *Runner) updateState(ts int64, equity, unrealized, marginUsed float64, p
 			LiquidationPrice: pos.LiquidationPrice,
 			MarginUsed:       pos.Margin,
 			OpenTime:         pos.OpenTime,
+			StopLoss:         pos.StopLoss,
+			TakeProfit:       pos.TakeProfit,
 		}
 	}
 
@@ -968,6 +1045,156 @@ func (r *Runner) checkLiquidation(ts int64, priceMap map[string]float64, cycle i
 	r.stateMu.Unlock()
 
 	return events, note, nil
+}
+
+// checkRiskEventsWithOHLC 使用 OHLC 数据统一检查止损止盈和爆仓
+// 返回: (止损止盈事件, 爆仓事件)
+// 优先级: 爆仓 > 止损 > 止盈
+func (r *Runner) checkRiskEventsWithOHLC(
+	priceMap, highMap, lowMap map[string]float64,
+	ts int64,
+	cycle int,
+) ([]TradeEvent, []TradeEvent) {
+	slTpEvents := make([]TradeEvent, 0)
+	liqEvents := make([]TradeEvent, 0)
+
+	// 复制持仓列表以避免迭代时修改
+	positions := append([]*position(nil), r.account.Positions()...)
+
+	for _, pos := range positions {
+		currentPrice := priceMap[pos.Symbol]
+		high := highMap[pos.Symbol]
+		low := lowMap[pos.Symbol]
+
+		if currentPrice <= 0 || high <= 0 || low <= 0 {
+			continue
+		}
+
+		var triggerType string // "stop_loss", "take_profit", "liquidation"
+		var triggerPrice float64
+		var reason string
+
+		if pos.Side == "long" {
+			// 多头：检查最低价（Low）触发止损/爆仓，最高价（High）触发止盈
+			// 优先级：爆仓 > 止损 > 止盈
+
+			if low <= pos.LiquidationPrice && pos.LiquidationPrice > 0 {
+				// 强平触发（优先级最高）
+				triggerType = "liquidation"
+				triggerPrice = pos.LiquidationPrice
+				reason = fmt.Sprintf("强制平仓: Low %.4f <= 爆仓价 %.4f", low, pos.LiquidationPrice)
+
+			} else if pos.StopLoss > 0 && low <= pos.StopLoss {
+				// 止损触发
+				triggerType = "stop_loss"
+				triggerPrice = pos.StopLoss
+				reason = fmt.Sprintf("多头止损触发: Low %.4f <= %.4f", low, pos.StopLoss)
+
+			} else if pos.TakeProfit > 0 && high >= pos.TakeProfit {
+				// 止盈触发（检查最高价）
+				triggerType = "take_profit"
+				triggerPrice = pos.TakeProfit
+				reason = fmt.Sprintf("多头止盈触发: High %.4f >= %.4f", high, pos.TakeProfit)
+			}
+
+		} else if pos.Side == "short" {
+			// 空头：检查最高价（High）触发止损/爆仓，最低价（Low）触发止盈
+
+			if high >= pos.LiquidationPrice && pos.LiquidationPrice > 0 {
+				// 强平触发（优先级最高）
+				triggerType = "liquidation"
+				triggerPrice = pos.LiquidationPrice
+				reason = fmt.Sprintf("强制平仓: High %.4f >= 爆仓价 %.4f", high, pos.LiquidationPrice)
+
+			} else if pos.StopLoss > 0 && high >= pos.StopLoss {
+				// 止损触发
+				triggerType = "stop_loss"
+				triggerPrice = pos.StopLoss
+				reason = fmt.Sprintf("空头止损触发: High %.4f >= %.4f", high, pos.StopLoss)
+
+			} else if pos.TakeProfit > 0 && low <= pos.TakeProfit {
+				// 止盈触发（检查最低价）
+				triggerType = "take_profit"
+				triggerPrice = pos.TakeProfit
+				reason = fmt.Sprintf("空头止盈触发: Low %.4f <= %.4f", low, pos.TakeProfit)
+			}
+		}
+
+		if triggerType == "" {
+			continue
+		}
+
+		// 执行平仓，应用滑点
+		fillPrice := r.executionPrice(pos.Symbol, triggerPrice, ts)
+
+		// 🔧 修复：所有触发都应该使用更真实的成交价
+		// 止损/止盈/爆仓都是市价单，在市场继续向不利方向移动时会以更差的价格成交
+		if pos.Side == "long" {
+			// 多头平仓：价格下跌触发，使用更低的价格
+			// 参考价格：Low（K线内最不利价格）
+			worstPrice := low
+			if worstPrice < fillPrice {
+				fillPrice = worstPrice
+				log.Printf("  ⚠️ %s %s 使用更差的成交价: %.4f (原触发价: %.4f, Low: %.4f)",
+					pos.Symbol, triggerType, fillPrice, triggerPrice, low)
+			}
+		} else {
+			// 空头平仓：价格上涨触发，使用更高的价格
+			// 参考价格：High（K线内最不利价格）
+			worstPrice := high
+			if worstPrice > fillPrice {
+				fillPrice = worstPrice
+				log.Printf("  ⚠️ %s %s 使用更差的成交价: %.4f (原触发价: %.4f, High: %.4f)",
+					pos.Symbol, triggerType, fillPrice, triggerPrice, high)
+			}
+		}
+
+		realized, fee, execPrice, err := r.account.Close(
+			pos.Symbol,
+			pos.Side,
+			pos.Quantity,
+			fillPrice,
+		)
+
+		if err != nil {
+			log.Printf("⚠️ 风险事件平仓失败 [%s %s %s]: %v",
+				triggerType, pos.Symbol, pos.Side, err)
+			continue
+		}
+
+		action := fmt.Sprintf("auto_close_%s_%s", pos.Side, triggerType)
+		trade := TradeEvent{
+			Timestamp:       ts,
+			Symbol:          pos.Symbol,
+			Action:          action,
+			Side:            pos.Side,
+			Quantity:        pos.Quantity,
+			Price:           execPrice,
+			Fee:             fee,
+			RealizedPnL:     realized - fee,
+			Leverage:        pos.Leverage,
+			Cycle:           cycle,
+			Note:            reason,
+			LiquidationFlag: triggerType == "liquidation",
+		}
+
+		if triggerType == "liquidation" {
+			liqEvents = append(liqEvents, trade)
+			log.Printf("  🚨 %s (实际价格: %.4f, 盈亏: %.2f USDT)",
+				reason, execPrice, realized-fee)
+			// 标记回测已爆仓
+			r.stateMu.Lock()
+			r.state.Liquidated = true
+			r.state.LiquidationNote = fmt.Sprintf("%s %s @ %.4f", pos.Symbol, pos.Side, execPrice)
+			r.stateMu.Unlock()
+		} else {
+			slTpEvents = append(slTpEvents, trade)
+			log.Printf("  🛑 %s (实际价格: %.4f, 盈亏: %.2f USDT)",
+				reason, execPrice, realized-fee)
+		}
+	}
+
+	return slTpEvents, liqEvents
 }
 
 func (r *Runner) shouldTriggerDecision(barIndex int) bool {
@@ -1178,14 +1405,19 @@ func (r *Runner) buildMetadata(state BacktestState, runState RunState) *RunMetad
 	progress := progressPercent(state, r.cfg)
 
 	summary := RunSummary{
-		SymbolCount:     len(r.cfg.Symbols),
-		DecisionTF:      r.cfg.DecisionTimeframe,
-		ProcessedBars:   state.BarIndex,
-		ProgressPct:     progress,
-		EquityLast:      state.Equity,
-		MaxDrawdownPct:  state.MaxDrawdownPct,
-		Liquidated:      state.Liquidated,
-		LiquidationNote: state.LiquidationNote,
+		SymbolCount:           len(r.cfg.Symbols),
+		DecisionTF:            r.cfg.DecisionTimeframe,
+		ProcessedBars:         state.BarIndex,
+		ProgressPct:           progress,
+		EquityLast:            state.Equity,
+		MaxDrawdownPct:        state.MaxDrawdownPct,
+		Liquidated:            state.Liquidated,
+		LiquidationNote:       state.LiquidationNote,
+		PromptVariant:         r.cfg.PromptVariant,
+		PromptTemplate:        r.cfg.PromptTemplate,
+		CustomPrompt:          r.cfg.CustomPrompt,
+		OverridePrompt:        r.cfg.OverrideBasePrompt,
+		PromptContentSnapshot: r.promptSnapshot,
 	}
 
 	meta := &RunMetadata{

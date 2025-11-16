@@ -9,7 +9,7 @@ func TestBacktestAccount_RiskLimits(t *testing.T) {
 	t.Run("should reject leverage exceeding maximum", func(t *testing.T) {
 		acc := NewBacktestAccount(10000, 5, 2) // 10000 USDT, 5bps fee, 2bps slippage
 
-		_, _, _, err := acc.Open("BTCUSDT", "long", 0.1, 150, 50000, 0)
+		_, _, _, err := acc.Open("BTCUSDT", "long", 0.1, 150, 50000, 0, 0, 0)
 
 		if err == nil {
 			t.Fatal("Expected error for leverage > 100, got nil")
@@ -25,14 +25,14 @@ func TestBacktestAccount_RiskLimits(t *testing.T) {
 		// Open 20 positions (the maximum)
 		for i := 1; i <= 20; i++ {
 			symbol := "COIN" + string(rune('A'+i-1)) + "USDT"
-			_, _, _, err := acc.Open(symbol, "long", 0.1, 10, 100, 0)
+			_, _, _, err := acc.Open(symbol, "long", 0.1, 10, 100, 0, 0, 0)
 			if err != nil {
 				t.Fatalf("Failed to open position %d: %v", i, err)
 			}
 		}
 
 		// Try to open 21st position
-		_, _, _, err := acc.Open("NEWCOINUSDT", "long", 0.1, 10, 100, 0)
+		_, _, _, err := acc.Open("NEWCOINUSDT", "long", 0.1, 10, 100, 0, 0, 0)
 
 		if err == nil {
 			t.Fatal("Expected error for exceeding max positions, got nil")
@@ -47,7 +47,7 @@ func TestBacktestAccount_RiskLimits(t *testing.T) {
 
 		// Try to open a position with notional value > 50x equity (50,000 USDT)
 		// With 10x leverage, this would need quantity = 5.0 BTC at 50000 USDT
-		_, _, _, err := acc.Open("BTCUSDT", "long", 1.1, 10, 50000, 0)
+		_, _, _, err := acc.Open("BTCUSDT", "long", 1.1, 10, 50000, 0, 0, 0)
 
 		if err == nil {
 			t.Fatal("Expected error for excessive notional value, got nil")
@@ -61,7 +61,7 @@ func TestBacktestAccount_RiskLimits(t *testing.T) {
 		acc := NewBacktestAccount(10000, 5, 2)
 
 		// Open a reasonable position
-		pos, _, _, err := acc.Open("BTCUSDT", "long", 0.1, 20, 50000, 0)
+		pos, _, _, err := acc.Open("BTCUSDT", "long", 0.1, 20, 50000, 0, 0, 0)
 
 		if err != nil {
 			t.Fatalf("Expected successful open, got error: %v", err)
@@ -83,7 +83,7 @@ func TestBacktestAccount_BasicOperations(t *testing.T) {
 		acc := NewBacktestAccount(10000, 5, 2)
 
 		// Open long position
-		pos, _, _, err := acc.Open("ETHUSDT", "long", 1.0, 10, 3000, 0)
+		pos, _, _, err := acc.Open("ETHUSDT", "long", 1.0, 10, 3000, 0, 0, 0)
 		if err != nil {
 			t.Fatalf("Failed to open position: %v", err)
 		}
@@ -122,7 +122,7 @@ func TestBacktestAccount_BasicOperations(t *testing.T) {
 		}
 
 		// Open position
-		acc.Open("BTCUSDT", "long", 0.1, 10, 50000, 0)
+		acc.Open("BTCUSDT", "long", 0.1, 10, 50000, 0, 0, 0)
 
 		// Equity should change with position value
 		prices["BTCUSDT"] = 51000
@@ -140,7 +140,7 @@ func TestBacktestAccount_BasicOperations(t *testing.T) {
 
 		// Open 1 BTC @ $50,000, 10x leverage
 		// Slippage for long open: price * (1 + 0.0002) = 50010
-		pos, _, _, err := acc.Open("BTCUSDT", "long", 1.0, 10, 50000, 0)
+		pos, _, _, err := acc.Open("BTCUSDT", "long", 1.0, 10, 50000, 0, 0, 0)
 		if err != nil {
 			t.Fatalf("Failed to open position: %v", err)
 		}

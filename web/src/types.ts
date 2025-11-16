@@ -225,6 +225,11 @@ export interface BacktestRunSummary {
   max_drawdown_pct: number;
   liquidated: boolean;
   liquidation_note?: string;
+  prompt_variant?: string;
+  prompt_template?: string;
+  custom_prompt?: string;
+  override_prompt?: boolean;
+  prompt_content_snapshot?: string;
 }
 
 export interface BacktestRunMetadata {

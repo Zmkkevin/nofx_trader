@@ -18,6 +18,8 @@ type position struct {
 	Notional         float64
 	LiquidationPrice float64
 	OpenTime         int64
+	StopLoss         float64 // 止损价格，0 表示未设置
+	TakeProfit       float64 // 止盈价格，0 表示未设置
 }
 
 type BacktestAccount struct {
@@ -58,7 +60,7 @@ func (acc *BacktestAccount) removePosition(pos *position) {
 	delete(acc.positions, key)
 }
 
-func (acc *BacktestAccount) Open(symbol, side string, quantity float64, leverage int, price float64, ts int64) (*position, float64, float64, error) {
+func (acc *BacktestAccount) Open(symbol, side string, quantity float64, leverage int, price, stopLoss, takeProfit float64, ts int64) (*position, float64, float64, error) {
 	if quantity <= 0 {
 		return nil, 0, 0, fmt.Errorf("quantity must be positive")
 	}
@@ -107,6 +109,8 @@ func (acc *BacktestAccount) Open(symbol, side string, quantity float64, leverage
 		pos.Notional = notional
 		pos.OpenTime = ts
 		pos.LiquidationPrice = computeLiquidation(execPrice, leverage, side)
+		pos.StopLoss = stopLoss
+		pos.TakeProfit = takeProfit
 	} else {
 		if leverage != pos.Leverage {
 			// 采用权重平均杠杆（近似）
@@ -118,6 +122,13 @@ func (acc *BacktestAccount) Open(symbol, side string, quantity float64, leverage
 		pos.EntryPrice = ((pos.EntryPrice * pos.Quantity) + execPrice*quantity) / (pos.Quantity + quantity)
 		pos.Quantity += quantity
 		pos.LiquidationPrice = computeLiquidation(pos.EntryPrice, pos.Leverage, side)
+		// 加仓时更新止损止盈（如果提供了新值）
+		if stopLoss > 0 {
+			pos.StopLoss = stopLoss
+		}
+		if takeProfit > 0 {
+			pos.TakeProfit = takeProfit
+		}
 	}
 
 	return pos, fee, execPrice, nil
@@ -157,6 +168,28 @@ func (acc *BacktestAccount) Close(symbol, side string, quantity float64, price f
 	}
 
 	return realized, fee, execPrice, nil
+}
+
+// UpdateStopLoss 更新指定持仓的止损价格
+func (acc *BacktestAccount) UpdateStopLoss(symbol, side string, newStopLoss float64) error {
+	key := positionKey(symbol, side)
+	pos, ok := acc.positions[key]
+	if !ok || pos.Quantity <= epsilon {
+		return fmt.Errorf("no active %s position for %s", side, symbol)
+	}
+	pos.StopLoss = newStopLoss
+	return nil
+}
+
+// UpdateTakeProfit 更新指定持仓的止盈价格
+func (acc *BacktestAccount) UpdateTakeProfit(symbol, side string, newTakeProfit float64) error {
+	key := positionKey(symbol, side)
+	pos, ok := acc.positions[key]
+	if !ok || pos.Quantity <= epsilon {
+		return fmt.Errorf("no active %s position for %s", side, symbol)
+	}
+	pos.TakeProfit = newTakeProfit
+	return nil
 }
 
 func (acc *BacktestAccount) TotalEquity(priceMap map[string]float64) (float64, float64, map[string]float64) {
@@ -233,6 +266,85 @@ func (acc *BacktestAccount) positionLeverage(symbol, side string) int {
 		return pos.Leverage
 	}
 	return 0
+}
+
+// StopLossTakeProfitTrigger 表示一个止损/止盈触发事件
+type StopLossTakeProfitTrigger struct {
+	Position    *position
+	TriggerType string  // "stop_loss" 或 "take_profit"
+	TriggerPrice float64
+	CurrentPrice float64
+	Reason      string
+}
+
+// CheckStopLossTakeProfit 检查所有持仓的止损止盈条件，返回需要触发的持仓
+func (acc *BacktestAccount) CheckStopLossTakeProfit(priceMap map[string]float64) []StopLossTakeProfitTrigger {
+	var triggers []StopLossTakeProfitTrigger
+
+	for _, pos := range acc.positions {
+		if pos.Quantity <= epsilon {
+			continue
+		}
+
+		currentPrice, ok := priceMap[pos.Symbol]
+		if !ok || currentPrice <= 0 {
+			continue
+		}
+
+		// 检查多头止损/止盈
+		if pos.Side == "long" {
+			// 止损检查：价格跌破止损价
+			if pos.StopLoss > 0 && currentPrice <= pos.StopLoss {
+				triggers = append(triggers, StopLossTakeProfitTrigger{
+					Position:     pos,
+					TriggerType:  "stop_loss",
+					TriggerPrice: pos.StopLoss,
+					CurrentPrice: currentPrice,
+					Reason:       fmt.Sprintf("多头止损触发: %.4f <= %.4f", currentPrice, pos.StopLoss),
+				})
+				continue // 止损优先，不再检查止盈
+			}
+
+			// 止盈检查：价格涨破止盈价
+			if pos.TakeProfit > 0 && currentPrice >= pos.TakeProfit {
+				triggers = append(triggers, StopLossTakeProfitTrigger{
+					Position:     pos,
+					TriggerType:  "take_profit",
+					TriggerPrice: pos.TakeProfit,
+					CurrentPrice: currentPrice,
+					Reason:       fmt.Sprintf("多头止盈触发: %.4f >= %.4f", currentPrice, pos.TakeProfit),
+				})
+			}
+		}
+
+		// 检查空头止损/止盈
+		if pos.Side == "short" {
+			// 止损检查：价格涨破止损价
+			if pos.StopLoss > 0 && currentPrice >= pos.StopLoss {
+				triggers = append(triggers, StopLossTakeProfitTrigger{
+					Position:     pos,
+					TriggerType:  "stop_loss",
+					TriggerPrice: pos.StopLoss,
+					CurrentPrice: currentPrice,
+					Reason:       fmt.Sprintf("空头止损触发: %.4f >= %.4f", currentPrice, pos.StopLoss),
+				})
+				continue
+			}
+
+			// 止盈检查：价格跌破止盈价
+			if pos.TakeProfit > 0 && currentPrice <= pos.TakeProfit {
+				triggers = append(triggers, StopLossTakeProfitTrigger{
+					Position:     pos,
+					TriggerType:  "take_profit",
+					TriggerPrice: pos.TakeProfit,
+					CurrentPrice: currentPrice,
+					Reason:       fmt.Sprintf("空头止盈触发: %.4f <= %.4f", currentPrice, pos.TakeProfit),
+				})
+			}
+		}
+	}
+
+	return triggers
 }
 
 func (acc *BacktestAccount) Cash() float64 {

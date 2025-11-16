@@ -279,6 +279,160 @@ func TestPartialCloseValidation(t *testing.T) {
 	}
 }
 
+// TestMinimumPositionSize 测试最小开仓金额验证（统一规则：所有币种 12 USDT）
+func TestMinimumPositionSize(t *testing.T) {
+	tests := []struct {
+		name            string
+		decision        Decision
+		accountEquity   float64
+		btcEthLeverage  int
+		altcoinLeverage int
+		wantError       bool
+		errorMsg        string
+	}{
+		{
+			name: "BTC开仓12USDT_应该通过",
+			decision: Decision{
+				Symbol:          "BTCUSDT",
+				Action:          "open_long",
+				Leverage:        10,
+				PositionSizeUSD: 12.0,
+				StopLoss:        90000,
+				TakeProfit:      110000,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			wantError:       false,
+		},
+		{
+			name: "ETH开仓12USDT_应该通过",
+			decision: Decision{
+				Symbol:          "ETHUSDT",
+				Action:          "open_short",
+				Leverage:        5,
+				PositionSizeUSD: 12.0,
+				StopLoss:        4000,
+				TakeProfit:      3000,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			wantError:       false,
+		},
+		{
+			name: "山寨币开仓12USDT_应该通过",
+			decision: Decision{
+				Symbol:          "SOLUSDT",
+				Action:          "open_long",
+				Leverage:        5,
+				PositionSizeUSD: 12.0,
+				StopLoss:        50,
+				TakeProfit:      200,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			wantError:       false,
+		},
+		{
+			name: "BTC开仓11USDT_应该报错",
+			decision: Decision{
+				Symbol:          "BTCUSDT",
+				Action:          "open_long",
+				Leverage:        10,
+				PositionSizeUSD: 11.0,
+				StopLoss:        90000,
+				TakeProfit:      110000,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			wantError:       true,
+			errorMsg:        "开仓金额过小",
+		},
+		{
+			name: "ETH开仓10USDT_应该报错",
+			decision: Decision{
+				Symbol:          "ETHUSDT",
+				Action:          "open_short",
+				Leverage:        5,
+				PositionSizeUSD: 10.0,
+				StopLoss:        4000,
+				TakeProfit:      3000,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			wantError:       true,
+			errorMsg:        "开仓金额过小",
+		},
+		{
+			name: "山寨币开仓5USDT_应该报错",
+			decision: Decision{
+				Symbol:          "SOLUSDT",
+				Action:          "open_long",
+				Leverage:        5,
+				PositionSizeUSD: 5.0,
+				StopLoss:        50,
+				TakeProfit:      200,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			wantError:       true,
+			errorMsg:        "开仓金额过小",
+		},
+		{
+			name: "BTC开仓60USDT_应该通过（验证不再需要60USDT）",
+			decision: Decision{
+				Symbol:          "BTCUSDT",
+				Action:          "open_long",
+				Leverage:        10,
+				PositionSizeUSD: 60.0,
+				StopLoss:        90000,
+				TakeProfit:      110000,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			wantError:       false,
+		},
+		{
+			name: "ETH开仓15USDT_应该通过",
+			decision: Decision{
+				Symbol:          "ETHUSDT",
+				Action:          "open_long",
+				Leverage:        10,
+				PositionSizeUSD: 15.0,
+				StopLoss:        2000,
+				TakeProfit:      4000,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			wantError:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateDecision(&tt.decision, tt.accountEquity, tt.btcEthLeverage, tt.altcoinLeverage)
+
+			if (err != nil) != tt.wantError {
+				t.Errorf("validateDecision() error = %v, wantError %v", err, tt.wantError)
+				return
+			}
+
+			if tt.wantError && err != nil {
+				if tt.errorMsg != "" && !contains(err.Error(), tt.errorMsg) {
+					t.Errorf("错误信息不匹配: got %q, want to contain %q", err.Error(), tt.errorMsg)
+				}
+			}
+		})
+	}
+}
+
 // contains 检查字符串是否包含子串（辅助函数）
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

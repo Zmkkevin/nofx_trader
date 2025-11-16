@@ -885,6 +885,26 @@ export function BacktestPage() {
                       count: selectedRun?.summary.symbol_count ?? 0,
                     })}
                   </p>
+                  {selectedRun?.summary.prompt_template && (
+                    <p className="text-xs mt-1" style={{ color: '#848E9C' }}>
+                      {tr('detail.promptInfo')}:{' '}
+                      <span style={{ color: '#EAECEF' }}>
+                        {selectedRun.summary.prompt_template}
+                        {selectedRun.summary.prompt_variant && ` (${selectedRun.summary.prompt_variant})`}
+                        {selectedRun.summary.override_prompt && ' [Override]'}
+                      </span>
+                    </p>
+                  )}
+                  {selectedRun?.summary.prompt_content_snapshot && (
+                    <details className="mt-1 text-xs">
+                      <summary className="cursor-pointer" style={{ color: '#848E9C' }}>
+                        {tr('detail.promptSnapshot')}
+                      </summary>
+                      <div className="mt-1 p-2 rounded bg-[#1E2329] max-h-60 overflow-y-auto" style={{ color: '#EAECEF', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '11px' }}>
+                        {selectedRun.summary.prompt_content_snapshot}
+                      </div>
+                    </details>
+                  )}
                   <div className="flex flex-wrap items-center gap-2 mt-2">
                     <input
                       className="input"
