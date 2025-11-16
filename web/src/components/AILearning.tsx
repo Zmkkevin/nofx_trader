@@ -399,20 +399,32 @@ export default function AILearning({ traderId }: AILearningProps) {
                 className="text-6xl font-bold mono"
                 style={{
                   color:
-                    (performance.sharpe_ratio || 0) >= 2
-                      ? '#10B981'
-                      : (performance.sharpe_ratio || 0) >= 1
-                        ? '#22D3EE'
-                        : (performance.sharpe_ratio || 0) >= 0
-                          ? '#F0B90B'
-                          : '#F87171',
+                    performance.total_trades < 2
+                      ? '#94A3B8'
+                      : (performance.sharpe_ratio || 0) >= 2
+                        ? '#10B981'
+                        : (performance.sharpe_ratio || 0) >= 1
+                          ? '#22D3EE'
+                          : (performance.sharpe_ratio || 0) >= 0
+                            ? '#F0B90B'
+                            : '#F87171',
                   textShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
                 }}
               >
-                {performance.sharpe_ratio
-                  ? performance.sharpe_ratio.toFixed(2)
-                  : 'N/A'}
+                {performance.total_trades < 2
+                  ? 'N/A'
+                  : performance.sharpe_ratio
+                    ? performance.sharpe_ratio.toFixed(2)
+                    : 'N/A'}
               </div>
+              {performance.total_trades < 2 && (
+                <div
+                  className="text-xs mt-1"
+                  style={{ color: '#94A3B8' }}
+                >
+                  {t('insufficientTradesForSharpe', language)}
+                </div>
+              )}
 
               {performance.sharpe_ratio !== undefined && (
                 <div className="text-right mb-2">
