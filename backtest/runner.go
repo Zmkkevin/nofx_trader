@@ -91,8 +91,8 @@ func NewRunner(cfg BacktestConfig, mcpClient mcp.AIClient) (*Runner, error) {
 	// 生成 prompt 内容快照（启动时的完整prompt，用于记录）
 	promptSnapshot := decision.BuildPromptSnapshot(
 		cfg.InitialBalance,
-		cfg.Leverage.BTCETH,
-		cfg.Leverage.Altcoin,
+		cfg.Leverage.BTCETHLeverage,
+		cfg.Leverage.AltcoinLeverage,
 		cfg.CustomPrompt,
 		cfg.OverrideBasePrompt,
 		cfg.PromptTemplate,
