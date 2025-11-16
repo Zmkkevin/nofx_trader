@@ -104,43 +104,70 @@ export function DecisionCard({ decision, language }: DecisionCardProps) {
           {decision.decisions.map((action, index) => (
             <div
               key={`${action.symbol}-${index}`}
-              className="flex items-center gap-2 text-sm rounded px-3 py-2"
+              className="text-sm rounded px-3 py-2"
               style={{ background: '#0B0E11' }}
             >
-              <span
-                className="font-mono font-bold"
-                style={{ color: '#EAECEF' }}
-              >
-                {action.symbol}
-              </span>
-              <span
-                className="px-2 py-0.5 rounded text-xs font-bold"
-                style={
-                  action.action.includes('open')
-                    ? {
-                        background: 'rgba(96, 165, 250, 0.1)',
-                        color: '#60a5fa',
-                      }
-                    : action.action.includes('close')
-                    ? {
-                        background: 'rgba(14, 203, 129, 0.1)',
-                        color: '#0ECB81',
-                      }
-                    : {
-                        background: 'rgba(248, 113, 113, 0.1)',
-                        color: '#F87171',
-                      }
-                }
-              >
-                {action.action}
-              </span>
-              {action.reasoning && (
+              <div className="flex items-center gap-2 flex-wrap">
                 <span
-                  className="text-xs"
-                  style={{ color: '#848E9C', flex: 1 }}
+                  className="font-mono font-bold"
+                  style={{ color: '#EAECEF' }}
+                >
+                  {action.symbol}
+                </span>
+                <span
+                  className="px-2 py-0.5 rounded text-xs font-bold"
+                  style={
+                    action.action.includes('open')
+                      ? {
+                          background: 'rgba(96, 165, 250, 0.1)',
+                          color: '#60a5fa',
+                        }
+                      : action.action.includes('close')
+                      ? {
+                          background: 'rgba(14, 203, 129, 0.1)',
+                          color: '#0ECB81',
+                        }
+                      : {
+                          background: 'rgba(248, 113, 113, 0.1)',
+                          color: '#F87171',
+                        }
+                  }
+                >
+                  {action.action}
+                </span>
+                {action.price > 0 && (
+                  <span className="text-xs" style={{ color: '#848E9C' }}>
+                    @ ${action.price.toFixed(2)}
+                  </span>
+                )}
+                {action.new_stop_loss && (
+                  <span className="text-xs" style={{ color: '#F87171' }}>
+                    🛑 ${action.new_stop_loss.toFixed(2)}
+                  </span>
+                )}
+                {action.new_take_profit && (
+                  <span className="text-xs" style={{ color: '#0ECB81' }}>
+                    🎯 ${action.new_take_profit.toFixed(2)}
+                  </span>
+                )}
+                {action.close_percentage && (
+                  <span className="text-xs" style={{ color: '#F0B90B' }}>
+                    📊 {action.close_percentage.toFixed(1)}%
+                  </span>
+                )}
+                {action.quantity > 0 && (
+                  <span className="text-xs" style={{ color: '#848E9C' }}>
+                    {action.quantity.toFixed(4)}
+                  </span>
+                )}
+              </div>
+              {action.reasoning && (
+                <div
+                  className="text-xs mt-1"
+                  style={{ color: '#848E9C' }}
                 >
                   {action.reasoning}
-                </span>
+                </div>
               )}
             </div>
           ))}

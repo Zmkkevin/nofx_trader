@@ -59,7 +59,11 @@ describe('DecisionCard - New Fields Display', () => {
     // 验证 action 显示
     expect(screen.getByText('update_stop_loss')).toBeInTheDocument()
 
-    // Note: 当前实现只显示 action 文本，后续可以增强显示 new_stop_loss 的值
+    // 验证 new_stop_loss 显示（现在在同一行，用emoji表示）
+    expect(screen.getByText(/🛑.*48000\.00/)).toBeInTheDocument()
+
+    // 验证价格显示
+    expect(screen.getByText(/@ \$50000\.00/)).toBeInTheDocument()
   })
 
   it('should display new_take_profit field for update_take_profit action', () => {
@@ -85,6 +89,12 @@ describe('DecisionCard - New Fields Display', () => {
 
     expect(screen.getByText('ETHUSDT')).toBeInTheDocument()
     expect(screen.getByText('update_take_profit')).toBeInTheDocument()
+
+    // 验证 new_take_profit 显示（现在在同一行，用emoji表示）
+    expect(screen.getByText(/🎯.*3200\.00/)).toBeInTheDocument()
+
+    // 验证价格显示
+    expect(screen.getByText(/@ \$3000\.00/)).toBeInTheDocument()
   })
 
   it('should display close_percentage field for partial_close action', () => {
@@ -110,6 +120,15 @@ describe('DecisionCard - New Fields Display', () => {
 
     expect(screen.getByText('SOLUSDT')).toBeInTheDocument()
     expect(screen.getByText('partial_close')).toBeInTheDocument()
+
+    // 验证 close_percentage 显示（现在在同一行，用emoji表示）
+    expect(screen.getByText(/📊.*50\.0%/)).toBeInTheDocument()
+
+    // 验证 quantity 显示（现在在同一行，直接显示数字）
+    expect(screen.getByText(/5\.0000/)).toBeInTheDocument()
+
+    // 验证价格显示
+    expect(screen.getByText(/@ \$100\.00/)).toBeInTheDocument()
   })
 
   it('should display multiple actions with different new fields', () => {
