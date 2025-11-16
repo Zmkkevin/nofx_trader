@@ -78,6 +78,11 @@ type DecisionAction struct {
 	Timestamp time.Time `json:"timestamp"` // 执行时间
 	Success   bool      `json:"success"`   // 是否成功
 	Error     string    `json:"error"`     // 错误信息
+
+	// 调整参数（用于前端显示）
+	NewStopLoss     float64 `json:"new_stop_loss,omitempty"`     // 新止损价格（update_stop_loss 时使用）
+	NewTakeProfit   float64 `json:"new_take_profit,omitempty"`   // 新止盈价格（update_take_profit 时使用）
+	ClosePercentage float64 `json:"close_percentage,omitempty"`  // 平仓百分比（partial_close 时使用，0-100）
 }
 
 // IDecisionLogger 决策日志记录器接口

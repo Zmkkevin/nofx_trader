@@ -1852,3 +1852,201 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 	t.Logf("   Filtered SharpeRatio: %.4f", performance.SharpeRatio)
 	t.Logf("   Note: This Sharpe should be based on prompt2's volatile trades (+500, -400, +300)")
 }
+// TestDecisionActionNewFields 测试 DecisionAction 新增字段的序列化和记录
+func TestDecisionActionNewFields(t *testing.T) {
+	// 创建临时目录
+	tmpDir := t.TempDir()
+	logger := NewDecisionLogger(tmpDir)
+
+	// 测试 update_stop_loss 字段
+	t.Run("update_stop_loss with new_stop_loss field", func(t *testing.T) {
+		record := &DecisionRecord{
+			Timestamp:   time.Now(),
+			CycleNumber: 1,
+			Exchange:    "binance",
+			Success:     true,
+			Decisions: []DecisionAction{
+				{
+					Action:      "update_stop_loss",
+					Symbol:      "BTCUSDT",
+					Price:       50000.0,
+					NewStopLoss: 48000.0, // 新增字段
+					Timestamp:   time.Now(),
+					Success:     true,
+				},
+			},
+		}
+
+		err := logger.LogDecision(record)
+		if err != nil {
+			t.Fatalf("LogDecision failed: %v", err)
+		}
+
+		// 读取记录验证
+		records, err := logger.GetLatestRecords(1)
+		if err != nil {
+			t.Fatalf("GetLatestRecords failed: %v", err)
+		}
+
+		if len(records) != 1 {
+			t.Fatalf("Expected 1 record, got %d", len(records))
+		}
+
+		if len(records[0].Decisions) != 1 {
+			t.Fatalf("Expected 1 decision, got %d", len(records[0].Decisions))
+		}
+
+		action := records[0].Decisions[0]
+		if action.Action != "update_stop_loss" {
+			t.Errorf("Expected action 'update_stop_loss', got '%s'", action.Action)
+		}
+
+		if action.NewStopLoss != 48000.0 {
+			t.Errorf("Expected NewStopLoss = 48000.0, got %.2f", action.NewStopLoss)
+		}
+	})
+
+	// 测试 update_take_profit 字段
+	t.Run("update_take_profit with new_take_profit field", func(t *testing.T) {
+		record := &DecisionRecord{
+			Timestamp:   time.Now(),
+			CycleNumber: 2,
+			Exchange:    "binance",
+			Success:     true,
+			Decisions: []DecisionAction{
+				{
+					Action:        "update_take_profit",
+					Symbol:        "ETHUSDT",
+					Price:         3000.0,
+					NewTakeProfit: 3200.0, // 新增字段
+					Timestamp:     time.Now(),
+					Success:       true,
+				},
+			},
+		}
+
+		err := logger.LogDecision(record)
+		if err != nil {
+			t.Fatalf("LogDecision failed: %v", err)
+		}
+
+		// 读取记录验证
+		records, err := logger.GetLatestRecords(1)
+		if err != nil {
+			t.Fatalf("GetLatestRecords failed: %v", err)
+		}
+
+		action := records[0].Decisions[0]
+		if action.Action != "update_take_profit" {
+			t.Errorf("Expected action 'update_take_profit', got '%s'", action.Action)
+		}
+
+		if action.NewTakeProfit != 3200.0 {
+			t.Errorf("Expected NewTakeProfit = 3200.0, got %.2f", action.NewTakeProfit)
+		}
+	})
+
+	// 测试 partial_close 字段
+	t.Run("partial_close with close_percentage field", func(t *testing.T) {
+		record := &DecisionRecord{
+			Timestamp:   time.Now(),
+			CycleNumber: 3,
+			Exchange:    "binance",
+			Success:     true,
+			Decisions: []DecisionAction{
+				{
+					Action:          "partial_close",
+					Symbol:          "SOLUSDT",
+					Price:           100.0,
+					Quantity:        5.0,
+					ClosePercentage: 50.0, // 新增字段
+					Timestamp:       time.Now(),
+					Success:         true,
+				},
+			},
+		}
+
+		err := logger.LogDecision(record)
+		if err != nil {
+			t.Fatalf("LogDecision failed: %v", err)
+		}
+
+		// 读取记录验证
+		records, err := logger.GetLatestRecords(1)
+		if err != nil {
+			t.Fatalf("GetLatestRecords failed: %v", err)
+		}
+
+		action := records[0].Decisions[0]
+		if action.Action != "partial_close" {
+			t.Errorf("Expected action 'partial_close', got '%s'", action.Action)
+		}
+
+		if action.ClosePercentage != 50.0 {
+			t.Errorf("Expected ClosePercentage = 50.0, got %.2f", action.ClosePercentage)
+		}
+	})
+
+	// 测试多个字段同时存在
+	t.Run("multiple new fields in one record", func(t *testing.T) {
+		record := &DecisionRecord{
+			Timestamp:   time.Now(),
+			CycleNumber: 4,
+			Exchange:    "binance",
+			Success:     true,
+			Decisions: []DecisionAction{
+				{
+					Action:      "update_stop_loss",
+					Symbol:      "BTCUSDT",
+					Price:       50000.0,
+					NewStopLoss: 48000.0,
+					Timestamp:   time.Now(),
+					Success:     true,
+				},
+				{
+					Action:        "update_take_profit",
+					Symbol:        "ETHUSDT",
+					Price:         3000.0,
+					NewTakeProfit: 3200.0,
+					Timestamp:     time.Now(),
+					Success:       true,
+				},
+				{
+					Action:          "partial_close",
+					Symbol:          "SOLUSDT",
+					Price:           100.0,
+					Quantity:        5.0,
+					ClosePercentage: 50.0,
+					Timestamp:       time.Now(),
+					Success:         true,
+				},
+			},
+		}
+
+		err := logger.LogDecision(record)
+		if err != nil {
+			t.Fatalf("LogDecision failed: %v", err)
+		}
+
+		// 读取记录验证
+		records, err := logger.GetLatestRecords(1)
+		if err != nil {
+			t.Fatalf("GetLatestRecords failed: %v", err)
+		}
+
+		if len(records[0].Decisions) != 3 {
+			t.Fatalf("Expected 3 decisions, got %d", len(records[0].Decisions))
+		}
+
+		// 验证每个字段
+		if records[0].Decisions[0].NewStopLoss != 48000.0 {
+			t.Errorf("Decision 0: Expected NewStopLoss = 48000.0, got %.2f", records[0].Decisions[0].NewStopLoss)
+		}
+		if records[0].Decisions[1].NewTakeProfit != 3200.0 {
+			t.Errorf("Decision 1: Expected NewTakeProfit = 3200.0, got %.2f", records[0].Decisions[1].NewTakeProfit)
+		}
+		if records[0].Decisions[2].ClosePercentage != 50.0 {
+			t.Errorf("Decision 2: Expected ClosePercentage = 50.0, got %.2f", records[0].Decisions[2].ClosePercentage)
+		}
+	})
+}

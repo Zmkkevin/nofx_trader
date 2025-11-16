@@ -51,6 +51,10 @@ export interface DecisionAction {
   success: boolean
   error?: string
   reasoning?: string
+  // 调整参数（用于前端显示）
+  new_stop_loss?: number // 新止损价格（update_stop_loss 时使用）
+  new_take_profit?: number // 新止盈价格（update_take_profit 时使用）
+  close_percentage?: number // 平仓百分比（partial_close 时使用，0-100）
 }
 
 export interface AccountSnapshot {

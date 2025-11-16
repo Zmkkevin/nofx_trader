@@ -974,6 +974,7 @@ func (at *AutoTrader) executeUpdateStopLossWithRecord(decision *decision.Decisio
 		return err
 	}
 	actionRecord.Price = marketData.CurrentPrice
+	actionRecord.NewStopLoss = decision.NewStopLoss // 记录新止损价格（用于前端显示）
 
 	// 获取当前持仓
 	positions, err := at.trader.GetPositions()
@@ -1058,6 +1059,7 @@ func (at *AutoTrader) executeUpdateTakeProfitWithRecord(decision *decision.Decis
 		return err
 	}
 	actionRecord.Price = marketData.CurrentPrice
+	actionRecord.NewTakeProfit = decision.NewTakeProfit // 记录新止盈价格（用于前端显示）
 
 	// 获取当前持仓
 	positions, err := at.trader.GetPositions()
@@ -1147,6 +1149,7 @@ func (at *AutoTrader) executePartialCloseWithRecord(decision *decision.Decision,
 		return err
 	}
 	actionRecord.Price = marketData.CurrentPrice
+	actionRecord.ClosePercentage = decision.ClosePercentage // 记录平仓百分比（用于前端显示）
 
 	// 获取当前持仓
 	positions, err := at.trader.GetPositions()
