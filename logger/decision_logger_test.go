@@ -930,3 +930,84 @@ func TestLogDecision_AutoUpdateStats(t *testing.T) {
 		t.Errorf("Expected BTCUSDT trade to be loss, got PnL: %f", btcTrade.PnL)
 	}
 }
+
+// TestGetPerformanceWithCache 测试缓存懒加载逻辑
+func TestGetPerformanceWithCache(t *testing.T) {
+	// 创建临时测试目录
+	tmpDir, err := os.MkdirTemp("", "test_performance_cache_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger := NewDecisionLogger(tmpDir)
+
+	// 模拟一些历史交易数据
+	for i := 1; i <= 5; i++ {
+		record := &DecisionRecord{
+			Timestamp: time.Now().Add(-time.Duration(i) * time.Hour),
+			Success:   true,
+			Decisions: []DecisionAction{
+				{
+					Action:    "open_long",
+					Symbol:    "BTCUSDT",
+					Quantity:  0.1,
+					Price:     50000.0,
+					Leverage:  10,
+					Timestamp: time.Now().Add(-time.Duration(i) * time.Hour),
+					Success:   true,
+				},
+				{
+					Action:    "close_long",
+					Symbol:    "BTCUSDT",
+					Quantity:  0.1,
+					Price:     51000.0,
+					Timestamp: time.Now().Add(-time.Duration(i) * time.Hour).Add(30 * time.Minute),
+					Success:   true,
+				},
+			},
+		}
+		if err := logger.LogDecision(record); err != nil {
+			t.Fatalf("Failed to log decision: %v", err)
+		}
+	}
+
+	// 测试 1: 首次调用应该触发大窗口扫描
+	performance1, err := logger.GetPerformanceWithCache(20)
+	if err != nil {
+		t.Fatalf("GetPerformanceWithCache failed: %v", err)
+	}
+
+	if performance1 == nil {
+		t.Fatal("Expected performance analysis, got nil")
+	}
+
+	if performance1.TotalTrades == 0 {
+		t.Error("Expected total_trades > 0")
+	}
+
+	if len(performance1.RecentTrades) == 0 {
+		t.Error("Expected recent_trades to be populated")
+	}
+
+	// 测试 2: 第二次调用应该使用缓存（不重新扫描）
+	performance2, err := logger.GetPerformanceWithCache(10)
+	if err != nil {
+		t.Fatalf("Second GetPerformanceWithCache failed: %v", err)
+	}
+
+	if performance2 == nil {
+		t.Fatal("Expected performance analysis, got nil")
+	}
+
+	// 验证返回的交易数量限制正确
+	if len(performance2.RecentTrades) > 10 {
+		t.Errorf("Expected at most 10 trades, got %d", len(performance2.RecentTrades))
+	}
+
+	// 测试 3: 统计信息应该一致（因为使用的是同一批数据）
+	if performance1.TotalTrades != performance2.TotalTrades {
+		t.Errorf("Expected same total_trades, got %d vs %d",
+			performance1.TotalTrades, performance2.TotalTrades)
+	}
+}

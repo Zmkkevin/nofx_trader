@@ -86,6 +86,9 @@ type IDecisionLogger interface {
 	AddTradeToCache(trade TradeOutcome)
 	// GetRecentTrades 从缓存获取最近N条交易
 	GetRecentTrades(limit int) []TradeOutcome
+	// GetPerformanceWithCache 使用缓存机制获取历史表现分析（懒加载）
+	// tradeLimit: 返回的交易记录数量限制
+	GetPerformanceWithCache(tradeLimit int) (*PerformanceAnalysis, error)
 }
 
 // OpenPosition 记录开仓信息（用于主动维护缓存）
@@ -986,4 +989,44 @@ func (l *DecisionLogger) GetRecentTrades(limit int) []TradeOutcome {
 	result := make([]TradeOutcome, limit)
 	copy(result, l.tradesCache[:limit])
 	return result
+}
+
+// GetPerformanceWithCache 使用缓存机制获取历史表现分析（懒加载）
+// 🚀 优化：首次请求时扫描大量周期填充缓存，后续请求直接使用缓存
+// tradeLimit: 返回的交易记录数量限制（传递给 AI 或 API）
+func (l *DecisionLogger) GetPerformanceWithCache(tradeLimit int) (*PerformanceAnalysis, error) {
+	// 🚀 懒加载：首次请求时初始化缓存，后续直接读缓存
+	cachedTrades := l.GetRecentTrades(100)
+
+	var performance *PerformanceAnalysis
+	var err error
+
+	// 如果缓存为空（首次请求或重启后），扫描历史文件初始化缓存
+	if len(cachedTrades) == 0 {
+		// 分析足够多的周期以填充缓存（获得约100条交易）
+		// 假设每3分钟一个周期，1000个周期 = 50小时，足够覆盖长期持仓
+		performance, err = l.AnalyzePerformance(1000)
+		if err != nil {
+			return nil, fmt.Errorf("初始化缓存失败: %w", err)
+		}
+		// 重新从缓存读取
+		cachedTrades = l.GetRecentTrades(100)
+	}
+
+	// 如果缓存已有数据，只需小窗口分析获取统计信息（不需要大量扫描）
+	if performance == nil {
+		performance, err = l.AnalyzePerformance(100)
+		if err != nil {
+			return nil, fmt.Errorf("分析历史表现失败: %w", err)
+		}
+	}
+
+	// 使用缓存数据替换 RecentTrades，限制为请求的条数
+	if len(cachedTrades) > tradeLimit {
+		performance.RecentTrades = cachedTrades[:tradeLimit]
+	} else {
+		performance.RecentTrades = cachedTrades
+	}
+
+	return performance, nil
 }

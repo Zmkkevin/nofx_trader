@@ -683,9 +683,10 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 		marginUsedPct = (totalMarginUsed / totalEquity) * 100
 	}
 
-	// 5. 分析历史表现（最近100个周期，避免长期持仓的交易记录丢失）
-	// 假设每3分钟一个周期，100个周期 = 5小时，足够覆盖大部分交易
-	performance, err := at.decisionLogger.AnalyzePerformance(100)
+	// 5. 分析历史表现（使用缓存机制，避免每次扫描文件）
+	// 🚀 使用统一的缓存懒加载逻辑（首次扫描1000周期，后续使用缓存）
+	// AI 只需要最近 20 笔交易作为参考
+	performance, err := at.decisionLogger.GetPerformanceWithCache(20)
 	if err != nil {
 		log.Printf("⚠️  分析历史表现失败: %v", err)
 		// 不影响主流程，继续执行（但设置performance为nil以避免传递错误数据）
