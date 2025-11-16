@@ -83,7 +83,7 @@ func TestLeverageFallback(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateDecision(&tt.decision, tt.accountEquity, tt.btcEthLeverage, tt.altcoinLeverage)
+			err := validateDecision(&tt.decision, tt.accountEquity, tt.btcEthLeverage, tt.altcoinLeverage, "hyperliquid")
 
 			// 检查错误状态
 			if (err != nil) != tt.wantError {
@@ -143,7 +143,7 @@ func TestUpdateStopLossValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateDecision(&tt.decision, 1000.0, 10, 5)
+			err := validateDecision(&tt.decision, 1000.0, 10, 5, "hyperliquid")
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("validateDecision() error = %v, wantError %v", err, tt.wantError)
@@ -203,7 +203,7 @@ func TestUpdateTakeProfitValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateDecision(&tt.decision, 1000.0, 10, 5)
+			err := validateDecision(&tt.decision, 1000.0, 10, 5, "hyperliquid")
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("validateDecision() error = %v, wantError %v", err, tt.wantError)
@@ -263,7 +263,7 @@ func TestPartialCloseValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateDecision(&tt.decision, 1000.0, 10, 5)
+			err := validateDecision(&tt.decision, 1000.0, 10, 5, "hyperliquid")
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("validateDecision() error = %v, wantError %v", err, tt.wantError)
@@ -279,7 +279,7 @@ func TestPartialCloseValidation(t *testing.T) {
 	}
 }
 
-// TestMinimumPositionSize 测试最小开仓金额验证（统一规则：所有币种 12 USDT）
+// TestMinimumPositionSize 测试最小开仓金额验证（不同交易所不同限制）
 func TestMinimumPositionSize(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -287,11 +287,13 @@ func TestMinimumPositionSize(t *testing.T) {
 		accountEquity   float64
 		btcEthLeverage  int
 		altcoinLeverage int
+		exchange        string
 		wantError       bool
 		errorMsg        string
 	}{
+		// Hyperliquid 测试（最小 12 USDT）
 		{
-			name: "BTC开仓12USDT_应该通过",
+			name: "Hyperliquid_BTC开仓12USDT_应该通过",
 			decision: Decision{
 				Symbol:          "BTCUSDT",
 				Action:          "open_long",
@@ -303,10 +305,11 @@ func TestMinimumPositionSize(t *testing.T) {
 			accountEquity:   1000,
 			btcEthLeverage:  10,
 			altcoinLeverage: 5,
+			exchange:        "hyperliquid",
 			wantError:       false,
 		},
 		{
-			name: "ETH开仓12USDT_应该通过",
+			name: "Hyperliquid_ETH开仓12USDT_应该通过",
 			decision: Decision{
 				Symbol:          "ETHUSDT",
 				Action:          "open_short",
@@ -318,10 +321,11 @@ func TestMinimumPositionSize(t *testing.T) {
 			accountEquity:   1000,
 			btcEthLeverage:  10,
 			altcoinLeverage: 5,
+			exchange:        "hyperliquid",
 			wantError:       false,
 		},
 		{
-			name: "山寨币开仓12USDT_应该通过",
+			name: "Hyperliquid_山寨币开仓12USDT_应该通过",
 			decision: Decision{
 				Symbol:          "SOLUSDT",
 				Action:          "open_long",
@@ -333,10 +337,11 @@ func TestMinimumPositionSize(t *testing.T) {
 			accountEquity:   1000,
 			btcEthLeverage:  10,
 			altcoinLeverage: 5,
+			exchange:        "hyperliquid",
 			wantError:       false,
 		},
 		{
-			name: "BTC开仓11USDT_应该报错",
+			name: "Hyperliquid_开仓11USDT_应该报错",
 			decision: Decision{
 				Symbol:          "BTCUSDT",
 				Action:          "open_long",
@@ -348,76 +353,82 @@ func TestMinimumPositionSize(t *testing.T) {
 			accountEquity:   1000,
 			btcEthLeverage:  10,
 			altcoinLeverage: 5,
+			exchange:        "hyperliquid",
 			wantError:       true,
 			errorMsg:        "开仓金额过小",
 		},
+		// Binance 测试（最小 100 USDT）
 		{
-			name: "ETH开仓10USDT_应该报错",
-			decision: Decision{
-				Symbol:          "ETHUSDT",
-				Action:          "open_short",
-				Leverage:        5,
-				PositionSizeUSD: 10.0,
-				StopLoss:        4000,
-				TakeProfit:      3000,
-			},
-			accountEquity:   1000,
-			btcEthLeverage:  10,
-			altcoinLeverage: 5,
-			wantError:       true,
-			errorMsg:        "开仓金额过小",
-		},
-		{
-			name: "山寨币开仓5USDT_应该报错",
-			decision: Decision{
-				Symbol:          "SOLUSDT",
-				Action:          "open_long",
-				Leverage:        5,
-				PositionSizeUSD: 5.0,
-				StopLoss:        50,
-				TakeProfit:      200,
-			},
-			accountEquity:   1000,
-			btcEthLeverage:  10,
-			altcoinLeverage: 5,
-			wantError:       true,
-			errorMsg:        "开仓金额过小",
-		},
-		{
-			name: "BTC开仓60USDT_应该通过（验证不再需要60USDT）",
+			name: "Binance_BTC开仓100USDT_应该通过",
 			decision: Decision{
 				Symbol:          "BTCUSDT",
 				Action:          "open_long",
 				Leverage:        10,
-				PositionSizeUSD: 60.0,
+				PositionSizeUSD: 100.0,
 				StopLoss:        90000,
 				TakeProfit:      110000,
 			},
 			accountEquity:   1000,
 			btcEthLeverage:  10,
 			altcoinLeverage: 5,
+			exchange:        "binance",
 			wantError:       false,
 		},
 		{
-			name: "ETH开仓15USDT_应该通过",
+			name: "Binance_ETH开仓100USDT_应该通过",
 			decision: Decision{
 				Symbol:          "ETHUSDT",
-				Action:          "open_long",
-				Leverage:        10,
-				PositionSizeUSD: 15.0,
-				StopLoss:        2000,
-				TakeProfit:      4000,
+				Action:          "open_short",
+				Leverage:        5,
+				PositionSizeUSD: 100.0,
+				StopLoss:        4000,
+				TakeProfit:      3000,
 			},
 			accountEquity:   1000,
 			btcEthLeverage:  10,
 			altcoinLeverage: 5,
+			exchange:        "binance",
 			wantError:       false,
+		},
+		{
+			name: "Binance_开仓99USDT_应该报错",
+			decision: Decision{
+				Symbol:          "BTCUSDT",
+				Action:          "open_long",
+				Leverage:        10,
+				PositionSizeUSD: 99.0,
+				StopLoss:        90000,
+				TakeProfit:      110000,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			exchange:        "binance",
+			wantError:       true,
+			errorMsg:        "开仓金额过小",
+		},
+		{
+			name: "Binance_开仓12USDT_应该报错",
+			decision: Decision{
+				Symbol:          "SOLUSDT",
+				Action:          "open_long",
+				Leverage:        5,
+				PositionSizeUSD: 12.0,
+				StopLoss:        50,
+				TakeProfit:      200,
+			},
+			accountEquity:   1000,
+			btcEthLeverage:  10,
+			altcoinLeverage: 5,
+			exchange:        "binance",
+			wantError:       true,
+			errorMsg:        "开仓金额过小",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateDecision(&tt.decision, tt.accountEquity, tt.btcEthLeverage, tt.altcoinLeverage)
+			err := validateDecision(&tt.decision, tt.accountEquity, tt.btcEthLeverage, tt.altcoinLeverage, tt.exchange)
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("validateDecision() error = %v, wantError %v", err, tt.wantError)

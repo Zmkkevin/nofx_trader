@@ -79,6 +79,7 @@ type Context struct {
 	CurrentTime     string                             `json:"current_time"`
 	RuntimeMinutes  int                                `json:"runtime_minutes"`
 	CallCount       int                                `json:"call_count"`
+	Exchange        string                             `json:"-"` // 交易所名称（binance/hyperliquid）
 	Account         AccountInfo                        `json:"account"`
 	Positions       []PositionInfo                     `json:"positions"`
 	CandidateCoins  []CandidateCoin                    `json:"candidate_coins"`
@@ -149,7 +150,7 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient mcp.AIClient, custo
 	}
 
 	// 4. 解析AI响应
-	decision, err := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
+	decision, err := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage, ctx.Exchange)
 
 	// 无论是否有错误，都要保存 SystemPrompt 和 UserPrompt（用于调试和决策未执行后的问题定位）
 	if decision != nil {
@@ -474,7 +475,7 @@ func buildUserPrompt(ctx *Context) string {
 }
 
 // parseFullDecisionResponse 解析AI的完整决策响应
-func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int) (*FullDecision, error) {
+func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int, exchange string) (*FullDecision, error) {
 	// 1. 提取思维链
 	cotTrace := extractCoTTrace(aiResponse)
 
@@ -488,7 +489,7 @@ func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthL
 	}
 
 	// 3. 验证决策
-	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage); err != nil {
+	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage, exchange); err != nil {
 		return &FullDecision{
 			CoTTrace:  cotTrace,
 			Decisions: decisions,
@@ -687,9 +688,9 @@ func compactArrayOpen(s string) string {
 }
 
 // validateDecisions 验证所有决策（需要账户信息和杠杆配置）
-func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int) error {
+func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, exchange string) error {
 	for i, decision := range decisions {
-		if err := validateDecision(&decision, accountEquity, btcEthLeverage, altcoinLeverage); err != nil {
+		if err := validateDecision(&decision, accountEquity, btcEthLeverage, altcoinLeverage, exchange); err != nil {
 			return fmt.Errorf("决策 #%d 验证失败: %w", i+1, err)
 		}
 	}
@@ -719,7 +720,7 @@ func findMatchingBracket(s string, start int) int {
 }
 
 // validateDecision 验证单个决策的有效性
-func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int) error {
+func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, exchange string) error {
 	// 验证action
 	validActions := map[string]bool{
 		"open_long":          true,
@@ -760,13 +761,16 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 			return fmt.Errorf("仓位大小必须大于0: %.2f", d.PositionSizeUSD)
 		}
 
-		// ✅ 验证最小开仓金额（防止数量格式化为 0 的错误）
-		// 交易所最小名义价值 10 USDT + 20% 安全边际
-		// 根据实际精度测试，12 USDT 对所有币种（包括 BTC/ETH）都足够，即使使用最高杠杆
-		const minPositionSize = 12.0 // 统一规则，所有币种一致
+		// ✅ 验证最小开仓金额（根据不同交易所设置不同限制）
+		// - Binance: MIN_NOTIONAL=100 USDT（严格限制）
+		// - Hyperliquid: szDecimals=5（精度更高，最小 12 USDT）
+		minPositionSize := 100.0 // 默认 Binance
+		if strings.ToLower(exchange) == "hyperliquid" {
+			minPositionSize = 12.0
+		}
 
 		if d.PositionSizeUSD < minPositionSize {
-			return fmt.Errorf("开仓金额过小(%.2f USDT)，必须≥%.2f USDT（交易所最小名义价值 10 USDT + 20%% 安全边际）", d.PositionSizeUSD, minPositionSize)
+			return fmt.Errorf("开仓金额过小(%.2f USDT)，必须≥%.2f USDT（%s 交易所要求）", d.PositionSizeUSD, minPositionSize, exchange)
 		}
 
 		// 验证仓位价值上限（加1%容差以避免浮点数精度问题）
