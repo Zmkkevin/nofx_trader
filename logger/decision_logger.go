@@ -941,6 +941,68 @@ func filterByPromptHash(trades []TradeOutcome, promptHash string) []TradeOutcome
 	return filtered
 }
 
+// calculateSharpeRatioFromTrades 从交易列表计算夏普比率
+// 用于替代 calculateSharpeRatioFromEquity，支持基于过滤后的交易计算
+func (l *DecisionLogger) calculateSharpeRatioFromTrades(trades []TradeOutcome) float64 {
+	if len(trades) < 2 {
+		return 0.0
+	}
+
+	// 从交易重建 equity 序列
+	// 假设初始资金（这里用一个合理的默认值，实际不影响收益率计算）
+	initialEquity := 10000.0
+	equities := make([]float64, len(trades)+1)
+	equities[0] = initialEquity
+
+	for i, trade := range trades {
+		equities[i+1] = equities[i] + trade.PnL
+	}
+
+	// 计算周期收益率
+	var returns []float64
+	for i := 1; i < len(equities); i++ {
+		if equities[i-1] > 0 {
+			periodReturn := (equities[i] - equities[i-1]) / equities[i-1]
+			returns = append(returns, periodReturn)
+		}
+	}
+
+	if len(returns) == 0 {
+		return 0.0
+	}
+
+	// 计算平均收益率
+	var sum float64
+	for _, r := range returns {
+		sum += r
+	}
+	meanReturn := sum / float64(len(returns))
+
+	// 计算收益率标准差
+	sumSquaredDiff := 0.0
+	for _, r := range returns {
+		diff := r - meanReturn
+		sumSquaredDiff += diff * diff
+	}
+	variance := sumSquaredDiff / float64(len(returns))
+	stdDev := math.Sqrt(variance)
+
+	// 避免除以零
+	if stdDev == 0 {
+		if meanReturn > 0 {
+			return 999.0 // 无波动的正收益
+		} else if meanReturn < 0 {
+			return -999.0 // 无波动的负收益
+		}
+		return 0.0
+	}
+
+	// 计算夏普比率（假设无风险利率为0）
+	// 注：直接返回周期级别的夏普比率（非年化），正常范围 -2 到 +2
+	sharpeRatio := meanReturn / stdDev
+	return sharpeRatio
+}
+
 // calculateTrade 计算完整交易的盈亏和其他指标
 func (l *DecisionLogger) calculateTrade(openPos *OpenPosition, closeDecision DecisionAction, exchange string, systemPrompt string) TradeOutcome {
 	quantity := openPos.Quantity
@@ -1262,8 +1324,8 @@ func (l *DecisionLogger) GetPerformanceWithCache(tradeLimit int) (*PerformanceAn
 		// ✅ 缓存已有数据：基于过滤后的交易计算统计信息
 		performance = l.calculateStatisticsFromTrades(filteredTrades)
 
-		// ✅ 从equity缓存计算SharpeRatio
-		performance.SharpeRatio = l.calculateSharpeRatioFromEquity()
+		// ✅ 从过滤后的交易计算SharpeRatio（而非全局equity缓存）
+		performance.SharpeRatio = l.calculateSharpeRatioFromTrades(filteredTrades)
 	}
 
 	// 使用过滤后的数据，限制为请求的条数

@@ -848,10 +848,9 @@ export default function AILearning({ traderId }: AILearningProps) {
                     {t('tradeHistory', language)}
                   </h3>
                   <p className="text-xs" style={{ color: '#94A3B8' }}>
-                    {performance?.recent_trades &&
-                    performance.recent_trades.length > 0
-                      ? t('completedTrades', language, {
-                          count: performance.recent_trades.length,
+                    {performance?.total_trades && performance.total_trades > 0
+                      ? t('currentStrategyTrades', language, {
+                          count: performance.total_trades,
                         })
                       : t('completedTradesWillAppear', language)}
                   </p>
