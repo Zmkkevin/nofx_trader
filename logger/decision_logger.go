@@ -11,6 +11,18 @@ import (
 	"time"
 )
 
+// 性能分析相关常量
+const (
+	// AIAnalysisSampleSize AI 性能分析的固定样本量
+	// 统计指标（胜率、夏普比率等）基于最近 N 笔交易计算
+	AIAnalysisSampleSize = 100
+
+	// InitialScanCycles 首次初始化时扫描的决策周期数量
+	// 目标：获取足够的交易填充缓存（至少 AIAnalysisSampleSize 笔）
+	// 假设每 3 分钟一个周期，1000 个周期 ≈ 50 小时历史数据
+	InitialScanCycles = 1000
+)
+
 // DecisionRecord 决策记录
 type DecisionRecord struct {
 	Timestamp      time.Time          `json:"timestamp"`       // 决策时间
@@ -102,14 +114,22 @@ type OpenPosition struct {
 	Exchange  string
 }
 
+// EquityPoint 账户净值记录点
+type EquityPoint struct {
+	Timestamp time.Time
+	Equity    float64
+}
+
 // DecisionLogger 决策日志记录器
 type DecisionLogger struct {
 	logDir        string
 	cycleNumber   int
-	tradesCache   []TradeOutcome  // 交易缓存（最新的在前）
-	tradeCacheSet map[string]bool // 已缓存交易的 Set（去重用）
-	cacheMutex    sync.RWMutex    // 缓存读写锁
-	maxCacheSize  int             // 最大缓存条数
+	tradesCache   []TradeOutcome       // 交易缓存（最新的在前）
+	tradeCacheSet map[string]bool      // 已缓存交易的 Set（去重用）
+	equityCache   []EquityPoint        // 净值历史缓存（最新的在前）
+	cacheMutex    sync.RWMutex         // 缓存读写锁
+	maxCacheSize  int                  // 最大缓存条数
+	maxEquitySize int                  // 最大净值缓存条数
 	openPositions map[string]*OpenPosition // 当前开仓（用于主动维护）
 	positionMutex sync.RWMutex             // 持仓读写锁
 }
@@ -135,7 +155,9 @@ func NewDecisionLogger(logDir string) IDecisionLogger {
 		cycleNumber:   0,
 		tradesCache:   make([]TradeOutcome, 0, 100),
 		tradeCacheSet: make(map[string]bool, 100),
+		equityCache:   make([]EquityPoint, 0, 200),
 		maxCacheSize:  100, // 缓存 100 条交易（与前端 limit 最大值一致）
+		maxEquitySize: 200, // 缓存 200 个净值点（足够计算SharpeRatio）
 		openPositions: make(map[string]*OpenPosition),
 	}
 }
@@ -173,6 +195,9 @@ func (l *DecisionLogger) LogDecision(record *DecisionRecord) error {
 
 	// 🚀 主动维护：检测交易完成并更新缓存
 	l.updateCacheFromDecision(record)
+
+	// 🚀 记录equity到缓存（用于SharpeRatio计算）
+	l.addEquityToCache(record.Timestamp, record.AccountState.TotalBalance)
 
 	return nil
 }
@@ -975,6 +1000,24 @@ func (l *DecisionLogger) AddTradeToCache(trade TradeOutcome) {
 	}
 }
 
+// addEquityToCache 添加净值记录到缓存（用于SharpeRatio计算）
+func (l *DecisionLogger) addEquityToCache(timestamp time.Time, equity float64) {
+	l.cacheMutex.Lock()
+	defer l.cacheMutex.Unlock()
+
+	// 插入到头部（最新的在前）
+	point := EquityPoint{
+		Timestamp: timestamp,
+		Equity:    equity,
+	}
+	l.equityCache = append([]EquityPoint{point}, l.equityCache...)
+
+	// 限制缓存大小
+	if len(l.equityCache) > l.maxEquitySize {
+		l.equityCache = l.equityCache[:l.maxEquitySize]
+	}
+}
+
 // GetRecentTrades 从缓存获取最近N条交易（最新的在前）
 func (l *DecisionLogger) GetRecentTrades(limit int) []TradeOutcome {
 	l.cacheMutex.RLock()
@@ -991,37 +1034,195 @@ func (l *DecisionLogger) GetRecentTrades(limit int) []TradeOutcome {
 	return result
 }
 
-// GetPerformanceWithCache 使用缓存机制获取历史表现分析（懒加载）
-// 🚀 优化：首次请求时扫描大量周期填充缓存，后续请求直接使用缓存
-// tradeLimit: 返回的交易记录数量限制（传递给 AI 或 API）
+// calculateStatisticsFromTrades 基于交易列表计算统计信息
+// 🎯 用于从缓存的交易记录中计算性能指标，避免重复扫描历史文件
+func (l *DecisionLogger) calculateStatisticsFromTrades(trades []TradeOutcome) *PerformanceAnalysis {
+	analysis := &PerformanceAnalysis{
+		RecentTrades: trades,
+		SymbolStats:  make(map[string]*SymbolPerformance),
+	}
+
+	if len(trades) == 0 {
+		return analysis
+	}
+
+	// 遍历所有交易，累计统计信息
+	for _, trade := range trades {
+		analysis.TotalTrades++
+
+		if trade.PnL >= 0 {
+			analysis.WinningTrades++
+			analysis.AvgWin += trade.PnL
+		} else {
+			analysis.LosingTrades++
+			analysis.AvgLoss += trade.PnL
+		}
+
+		// 按币种统计
+		if _, exists := analysis.SymbolStats[trade.Symbol]; !exists {
+			analysis.SymbolStats[trade.Symbol] = &SymbolPerformance{
+				Symbol: trade.Symbol,
+			}
+		}
+		stats := analysis.SymbolStats[trade.Symbol]
+		stats.TotalTrades++
+		stats.TotalPnL += trade.PnL
+
+		if trade.PnL >= 0 {
+			stats.WinningTrades++
+		} else {
+			stats.LosingTrades++
+		}
+	}
+
+	// 计算平均值和比率
+	if analysis.TotalTrades > 0 {
+		analysis.WinRate = (float64(analysis.WinningTrades) / float64(analysis.TotalTrades)) * 100
+
+		totalWinAmount := analysis.AvgWin
+		totalLossAmount := analysis.AvgLoss
+
+		if analysis.WinningTrades > 0 {
+			analysis.AvgWin /= float64(analysis.WinningTrades)
+		}
+		if analysis.LosingTrades > 0 {
+			analysis.AvgLoss /= float64(analysis.LosingTrades)
+		}
+
+		// Profit Factor = 总盈利 / 总亏损（绝对值）
+		if totalLossAmount != 0 {
+			analysis.ProfitFactor = totalWinAmount / (-totalLossAmount)
+		} else if totalWinAmount > 0 {
+			analysis.ProfitFactor = 999.0
+		}
+	}
+
+	// 计算各币种胜率和平均盈亏，找出最佳/最差币种
+	bestPnL := -999999.0
+	worstPnL := 999999.0
+	for symbol, stats := range analysis.SymbolStats {
+		if stats.TotalTrades > 0 {
+			stats.WinRate = (float64(stats.WinningTrades) / float64(stats.TotalTrades)) * 100
+			stats.AvgPnL = stats.TotalPnL / float64(stats.TotalTrades)
+
+			if stats.TotalPnL > bestPnL {
+				bestPnL = stats.TotalPnL
+				analysis.BestSymbol = symbol
+			}
+			if stats.TotalPnL < worstPnL {
+				worstPnL = stats.TotalPnL
+				analysis.WorstSymbol = symbol
+			}
+		}
+	}
+
+	return analysis
+}
+
+// calculateSharpeRatioFromEquity 从equity缓存计算夏普比率
+func (l *DecisionLogger) calculateSharpeRatioFromEquity() float64 {
+	l.cacheMutex.RLock()
+	defer l.cacheMutex.RUnlock()
+
+	if len(l.equityCache) < 2 {
+		return 0.0
+	}
+
+	// equity缓存是从新到旧排列,需要反转为从旧到新
+	var equities []float64
+	for i := len(l.equityCache) - 1; i >= 0; i-- {
+		if l.equityCache[i].Equity > 0 {
+			equities = append(equities, l.equityCache[i].Equity)
+		}
+	}
+
+	if len(equities) < 2 {
+		return 0.0
+	}
+
+	// 计算周期收益率
+	var returns []float64
+	for i := 1; i < len(equities); i++ {
+		if equities[i-1] > 0 {
+			periodReturn := (equities[i] - equities[i-1]) / equities[i-1]
+			returns = append(returns, periodReturn)
+		}
+	}
+
+	if len(returns) == 0 {
+		return 0.0
+	}
+
+	// 计算平均收益率
+	var sum float64
+	for _, r := range returns {
+		sum += r
+	}
+	avgReturn := sum / float64(len(returns))
+
+	// 计算标准差
+	var variance float64
+	for _, r := range returns {
+		diff := r - avgReturn
+		variance += diff * diff
+	}
+	variance /= float64(len(returns))
+	stdDev := variance
+
+	if variance > 0 {
+		stdDev = 1.0
+		for i := 0; i < 10; i++ {
+			stdDev = (stdDev + variance/stdDev) / 2
+		}
+	}
+
+	// 夏普比率 = (平均收益率 - 无风险收益率) / 标准差
+	// 假设无风险收益率为 0
+	if stdDev > 0 {
+		return avgReturn / stdDev
+	}
+
+	return 0.0
+}
+
+// GetPerformanceWithCache 获取 AI 性能分析
+//
+// 设计原则:
+// 1. 统计分析：固定基于最近 100 笔交易（AIAnalysisSampleSize）
+// 2. 列表显示：tradeLimit 仅控制返回给前端的交易记录数量
+// 3. 数据稳定性：统计指标（胜率、夏普比率等）不受 tradeLimit 影响
+//
+// 参数:
+//   tradeLimit: 返回给前端的交易列表长度（用户显示偏好，如 10/20/50/100）
+//
+// 返回:
+//   - total_trades: 分析的交易总数（固定基于 AIAnalysisSampleSize 或缓存全部）
+//   - recent_trades: 交易列表（长度 = min(tradeLimit, 实际交易数)）
 func (l *DecisionLogger) GetPerformanceWithCache(tradeLimit int) (*PerformanceAnalysis, error) {
-	// 🚀 懒加载：首次请求时初始化缓存，后续直接读缓存
-	cachedTrades := l.GetRecentTrades(100)
+	// 获取用于 AI 分析的固定样本（最近 100 笔交易）
+	cachedTrades := l.GetRecentTrades(AIAnalysisSampleSize)
 
 	var performance *PerformanceAnalysis
 	var err error
 
 	// 如果缓存为空（首次请求或重启后），扫描历史文件初始化缓存
 	if len(cachedTrades) == 0 {
-		// 分析足够多的周期以填充缓存（获得约100条交易）
-		// 假设每3分钟一个周期，1000个周期 = 50小时，足够覆盖长期持仓
-		performance, err = l.AnalyzePerformance(1000)
+		// 首次请求：扫描历史周期填充缓存
+		performance, err = l.AnalyzePerformance(InitialScanCycles)
 		if err != nil {
 			return nil, fmt.Errorf("初始化缓存失败: %w", err)
 		}
-		// 重新从缓存读取
-		cachedTrades = l.GetRecentTrades(100)
+		// 重新获取分析样本
+		cachedTrades = l.GetRecentTrades(AIAnalysisSampleSize)
+	} else {
+		// ✅ 缓存已有数据：直接从缓存计算所有统计信息
+		performance = l.calculateStatisticsFromTrades(cachedTrades)
+
+		// ✅ 从equity缓存计算SharpeRatio
+		performance.SharpeRatio = l.calculateSharpeRatioFromEquity()
 	}
 
-	// 如果缓存已有数据，只需小窗口分析获取统计信息（不需要大量扫描）
-	if performance == nil {
-		performance, err = l.AnalyzePerformance(100)
-		if err != nil {
-			return nil, fmt.Errorf("分析历史表现失败: %w", err)
-		}
-	}
-
-	// 使用缓存数据替换 RecentTrades，限制为请求的条数
+	// 使用缓存数据，限制为请求的条数
 	if len(cachedTrades) > tradeLimit {
 		performance.RecentTrades = cachedTrades[:tradeLimit]
 	} else {

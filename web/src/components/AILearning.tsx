@@ -862,7 +862,7 @@ export default function AILearning({ traderId }: AILearningProps) {
               <RecordLimitSelector
                 limit={tradeHistoryLimit}
                 onLimitChange={handleTradeHistoryLimitChange}
-                options={[10, 20, 50, 100]}
+                options={[5, 10, 20, 50]}
                 language={language}
               />
             </div>

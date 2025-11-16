@@ -1011,3 +1011,405 @@ func TestGetPerformanceWithCache(t *testing.T) {
 			performance1.TotalTrades, performance2.TotalTrades)
 	}
 }
+
+// TestPerformanceDataConsistency 测试统计信息和交易列表的数据一致性
+// 🎯 目标: 确保 TotalTrades 等统计信息与 RecentTrades 列表基于相同的数据源
+func TestPerformanceDataConsistency(t *testing.T) {
+	// Setup
+	tmpDir := t.TempDir()
+	logger := NewDecisionLogger(tmpDir)
+
+	// 模拟通过主动维护填充缓存
+	// 创建 10 笔交易: 6 笔盈利, 4 笔亏损
+	trades := []struct {
+		symbol     string
+		side       string
+		openPrice  float64
+		closePrice float64
+		quantity   float64
+		leverage   int
+	}{
+		{"BTC", "long", 50000, 51000, 0.1, 10},  // +100 USDT (盈利)
+		{"ETH", "long", 3000, 3100, 1.0, 10},    // +100 USDT (盈利)
+		{"BTC", "short", 51000, 50500, 0.1, 10}, // +50 USDT (盈利)
+		{"ETH", "short", 3100, 3150, 1.0, 10},   // -50 USDT (亏损)
+		{"BTC", "long", 50500, 51500, 0.1, 10},  // +100 USDT (盈利)
+		{"SOL", "long", 100, 95, 5.0, 10},       // -25 USDT (亏损)
+		{"BTC", "short", 51500, 51000, 0.1, 10}, // +50 USDT (盈利)
+		{"ETH", "long", 3150, 3100, 1.0, 10},    // -50 USDT (亏损)
+		{"SOL", "short", 95, 90, 5.0, 10},       // +25 USDT (盈利)
+		{"BTC", "long", 51000, 50800, 0.1, 10},  // -20 USDT (亏损)
+	}
+
+	baseTime := time.Now().Add(-1 * time.Hour)
+	initialBalance := 10000.0
+	currentBalance := initialBalance
+
+	for i, trade := range trades {
+		// 记录开仓
+		openAction := "open_" + trade.side
+		openRecord := &DecisionRecord{
+			Timestamp: baseTime.Add(time.Duration(i*10) * time.Minute),
+			Success:   true,
+			Exchange:  "binance",
+			Decisions: []DecisionAction{
+				{
+					Action:    openAction,
+					Symbol:    trade.symbol,
+					Price:     trade.openPrice,
+					Quantity:  trade.quantity,
+					Leverage:  trade.leverage,
+					Timestamp: baseTime.Add(time.Duration(i*10) * time.Minute),
+					Success:   true,
+				},
+			},
+			AccountState: AccountSnapshot{
+				TotalBalance: currentBalance,
+			},
+		}
+		if err := logger.LogDecision(openRecord); err != nil {
+			t.Fatalf("Failed to log open decision: %v", err)
+		}
+
+		// 计算盈亏
+		var pnl float64
+		if trade.side == "long" {
+			pnl = (trade.closePrice - trade.openPrice) * trade.quantity
+		} else {
+			pnl = (trade.openPrice - trade.closePrice) * trade.quantity
+		}
+		// 扣除手续费
+		feeRate := 0.0005 // Binance taker fee
+		openFee := trade.openPrice * trade.quantity * feeRate
+		closeFee := trade.closePrice * trade.quantity * feeRate
+		pnl -= (openFee + closeFee)
+
+		currentBalance += pnl
+
+		// 记录平仓
+		closeAction := "close_" + trade.side
+		closeRecord := &DecisionRecord{
+			Timestamp: baseTime.Add(time.Duration(i*10+5) * time.Minute),
+			Success:   true,
+			Exchange:  "binance",
+			Decisions: []DecisionAction{
+				{
+					Action:    closeAction,
+					Symbol:    trade.symbol,
+					Price:     trade.closePrice,
+					Quantity:  trade.quantity,
+					Timestamp: baseTime.Add(time.Duration(i*10+5) * time.Minute),
+					Success:   true,
+				},
+			},
+			AccountState: AccountSnapshot{
+				TotalBalance: currentBalance,
+			},
+		}
+		if err := logger.LogDecision(closeRecord); err != nil {
+			t.Fatalf("Failed to log close decision: %v", err)
+		}
+	}
+
+	// 等待缓存更新
+	time.Sleep(10 * time.Millisecond)
+
+	// 🔬 测试: 获取性能分析 (请求所有交易)
+	performance, err := logger.GetPerformanceWithCache(100)
+	if err != nil {
+		t.Fatalf("GetPerformanceWithCache failed: %v", err)
+	}
+
+	// ✅ 断言1: TotalTrades 应该等于 RecentTrades 的长度
+	if performance.TotalTrades != len(performance.RecentTrades) {
+		t.Errorf("❌ Data inconsistency: TotalTrades=%d but RecentTrades has %d items",
+			performance.TotalTrades, len(performance.RecentTrades))
+	}
+
+	// ✅ 断言2: TotalTrades 应该等于实际交易数量
+	expectedTrades := len(trades)
+	if performance.TotalTrades != expectedTrades {
+		t.Errorf("❌ Expected %d trades, but TotalTrades=%d",
+			expectedTrades, performance.TotalTrades)
+	}
+
+	// ✅ 断言3: WinningTrades + LosingTrades 应该等于 TotalTrades
+	if performance.WinningTrades+performance.LosingTrades != performance.TotalTrades {
+		t.Errorf("❌ WinningTrades(%d) + LosingTrades(%d) != TotalTrades(%d)",
+			performance.WinningTrades, performance.LosingTrades, performance.TotalTrades)
+	}
+
+	// ✅ 断言4: 验证盈利/亏损交易数量正确
+	expectedWinning := 6
+	expectedLosing := 4
+	if performance.WinningTrades != expectedWinning {
+		t.Errorf("❌ Expected %d winning trades, got %d",
+			expectedWinning, performance.WinningTrades)
+	}
+	if performance.LosingTrades != expectedLosing {
+		t.Errorf("❌ Expected %d losing trades, got %d",
+			expectedLosing, performance.LosingTrades)
+	}
+
+	// ✅ 断言5: 胜率应该正确 (60%)
+	expectedWinRate := 60.0
+	if performance.WinRate != expectedWinRate {
+		t.Errorf("❌ Expected win rate %.1f%%, got %.1f%%",
+			expectedWinRate, performance.WinRate)
+	}
+
+	t.Logf("✅ Performance data consistency verified:")
+	t.Logf("   TotalTrades: %d", performance.TotalTrades)
+	t.Logf("   RecentTrades length: %d", len(performance.RecentTrades))
+	t.Logf("   WinningTrades: %d, LosingTrades: %d", performance.WinningTrades, performance.LosingTrades)
+	t.Logf("   WinRate: %.1f%%", performance.WinRate)
+}
+
+// TestEquityCacheMaintenance 测试 equity 历史缓存的正确维护
+func TestEquityCacheMaintenance(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := NewDecisionLogger(tmpDir)
+
+	baseTime := time.Now()
+
+	// 记录5个决策，每个都有不同的账户余额
+	equities := []float64{10000.0, 10100.0, 10050.0, 10200.0, 10150.0}
+
+	for i, equity := range equities {
+		record := &DecisionRecord{
+			Timestamp:   baseTime.Add(time.Duration(i) * time.Minute),
+			CycleNumber: i + 1,
+			Success:     true,
+			Exchange:    "binance",
+			Decisions:   []DecisionAction{}, // hold 没有 decisions
+			AccountState: AccountSnapshot{
+				TotalBalance: equity,
+			},
+		}
+
+		err := logger.LogDecision(record)
+		if err != nil {
+			t.Fatalf("Failed to log decision %d: %v", i+1, err)
+		}
+	}
+
+	// 验证 equity 缓存（转换为具体类型以访问内部字段）
+	concreteLogger := logger.(*DecisionLogger)
+	concreteLogger.cacheMutex.RLock()
+	cache := concreteLogger.equityCache
+	concreteLogger.cacheMutex.RUnlock()
+
+	// 1. 验证缓存条数正确
+	if len(cache) != len(equities) {
+		t.Errorf("Expected %d equity points, got %d", len(equities), len(cache))
+	}
+
+	// 2. 验证顺序：应该是倒序（最新的在前）
+	expectedOrder := []float64{10150.0, 10200.0, 10050.0, 10100.0, 10000.0}
+	for i, expected := range expectedOrder {
+		if i < len(cache) {
+			if cache[i].Equity != expected {
+				t.Errorf("Equity point %d: expected %.2f, got %.2f", i, expected, cache[i].Equity)
+			}
+		}
+	}
+
+	// 3. 验证时间戳也是倒序
+	for i := 0; i < len(cache)-1; i++ {
+		if cache[i].Timestamp.Before(cache[i+1].Timestamp) {
+			t.Errorf("Equity cache not in reverse chronological order at index %d", i)
+		}
+	}
+
+	t.Logf("✅ Equity cache maintenance verified:")
+	t.Logf("   Cache size: %d", len(cache))
+	t.Logf("   Order: newest first (reverse chronological)")
+	t.Logf("   Equity values: %v", expectedOrder)
+}
+
+// TestEquityCacheMaxSize 测试 equity 缓存的大小限制
+func TestEquityCacheMaxSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := NewDecisionLogger(tmpDir)
+
+	baseTime := time.Now()
+	maxSize := 200 // 默认最大缓存大小
+
+	// 记录超过最大缓存数量的决策
+	for i := 0; i < maxSize+50; i++ {
+		record := &DecisionRecord{
+			Timestamp:   baseTime.Add(time.Duration(i) * time.Minute),
+			CycleNumber: i + 1,
+			Success:     true,
+			Exchange:    "binance",
+			Decisions:   []DecisionAction{},
+			AccountState: AccountSnapshot{
+				TotalBalance: 10000.0 + float64(i),
+			},
+		}
+
+		err := logger.LogDecision(record)
+		if err != nil {
+			t.Fatalf("Failed to log decision %d: %v", i+1, err)
+		}
+	}
+
+	// 验证缓存大小不超过限制（转换为具体类型）
+	concreteLogger := logger.(*DecisionLogger)
+	concreteLogger.cacheMutex.RLock()
+	cacheSize := len(concreteLogger.equityCache)
+	concreteLogger.cacheMutex.RUnlock()
+
+	if cacheSize > maxSize {
+		t.Errorf("Equity cache exceeded max size: got %d, max %d", cacheSize, maxSize)
+	}
+
+	if cacheSize != maxSize {
+		t.Errorf("Equity cache size incorrect: expected %d, got %d", maxSize, cacheSize)
+	}
+
+	// 验证保留的是最新的数据
+	concreteLogger.cacheMutex.RLock()
+	newestEquity := concreteLogger.equityCache[0].Equity
+	oldestEquity := concreteLogger.equityCache[len(concreteLogger.equityCache)-1].Equity
+	concreteLogger.cacheMutex.RUnlock()
+
+	expectedNewest := 10000.0 + float64(maxSize+49) // 最后一个记录
+	expectedOldest := 10000.0 + float64(50)         // 第51个记录（因为保留最新200个）
+
+	if newestEquity != expectedNewest {
+		t.Errorf("Newest equity incorrect: expected %.2f, got %.2f", expectedNewest, newestEquity)
+	}
+
+	if oldestEquity != expectedOldest {
+		t.Errorf("Oldest equity incorrect: expected %.2f, got %.2f", expectedOldest, oldestEquity)
+	}
+
+	t.Logf("✅ Equity cache max size verified:")
+	t.Logf("   Cache size: %d (max: %d)", cacheSize, maxSize)
+	t.Logf("   Newest equity: %.2f", newestEquity)
+	t.Logf("   Oldest equity: %.2f", oldestEquity)
+}
+
+// TestSharpeRatioCalculation 测试从 equity 缓存计算 SharpeRatio
+func TestSharpeRatioCalculation(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := NewDecisionLogger(tmpDir)
+	concreteLogger := logger.(*DecisionLogger)
+
+	baseTime := time.Now()
+
+	// 测试用例1: 稳定增长的equity序列
+	// 10000 -> 10100 (+1.0%) -> 10200 (+0.99%) -> 10300 (+0.98%)
+	stableGrowth := []float64{10000.0, 10100.0, 10200.0, 10300.0}
+
+	for i, equity := range stableGrowth {
+		record := &DecisionRecord{
+			Timestamp:   baseTime.Add(time.Duration(i) * time.Minute),
+			CycleNumber: i + 1,
+			Success:     true,
+			Exchange:    "binance",
+			Decisions:   []DecisionAction{},
+			AccountState: AccountSnapshot{
+				TotalBalance: equity,
+			},
+		}
+
+		err := logger.LogDecision(record)
+		if err != nil {
+			t.Fatalf("Failed to log decision %d: %v", i+1, err)
+		}
+	}
+
+	// 计算 SharpeRatio
+	sharpeRatio := concreteLogger.calculateSharpeRatioFromEquity()
+
+	// 验证 SharpeRatio 不为0（因为有正收益）
+	if sharpeRatio == 0 {
+		t.Errorf("Expected non-zero Sharpe ratio for stable growth, got 0")
+	}
+
+	// 对于稳定增长的序列，SharpeRatio 应该是正数
+	if sharpeRatio < 0 {
+		t.Errorf("Expected positive Sharpe ratio for stable growth, got %.4f", sharpeRatio)
+	}
+
+	t.Logf("✅ Stable growth Sharpe ratio: %.4f", sharpeRatio)
+
+	// 测试用例2: 波动的equity序列
+	tmpDir2 := t.TempDir()
+	logger2 := NewDecisionLogger(tmpDir2)
+	concreteLogger2 := logger2.(*DecisionLogger)
+
+	volatileEquities := []float64{10000.0, 10100.0, 9900.0, 10200.0, 9800.0, 10300.0}
+
+	for i, equity := range volatileEquities {
+		record := &DecisionRecord{
+			Timestamp:   baseTime.Add(time.Duration(i) * time.Minute),
+			CycleNumber: i + 1,
+			Success:     true,
+			Exchange:    "binance",
+			Decisions:   []DecisionAction{},
+			AccountState: AccountSnapshot{
+				TotalBalance: equity,
+			},
+		}
+
+		err := logger2.LogDecision(record)
+		if err != nil {
+			t.Fatalf("Failed to log decision %d: %v", i+1, err)
+		}
+	}
+
+	sharpeRatio2 := concreteLogger2.calculateSharpeRatioFromEquity()
+
+	// 波动序列的 SharpeRatio 应该比稳定增长的小（因为标准差更大）
+	if sharpeRatio2 >= sharpeRatio {
+		t.Logf("⚠ Warning: Volatile series Sharpe (%.4f) >= Stable growth Sharpe (%.4f)",
+			sharpeRatio2, sharpeRatio)
+	}
+
+	t.Logf("✅ Volatile series Sharpe ratio: %.4f", sharpeRatio2)
+
+	// 测试用例3: 只有一个equity点（应该返回0）
+	tmpDir3 := t.TempDir()
+	logger3 := NewDecisionLogger(tmpDir3)
+	concreteLogger3 := logger3.(*DecisionLogger)
+
+	singleRecord := &DecisionRecord{
+		Timestamp:   baseTime,
+		CycleNumber: 1,
+		Success:     true,
+		Exchange:    "binance",
+		Decisions:   []DecisionAction{},
+		AccountState: AccountSnapshot{
+			TotalBalance: 10000.0,
+		},
+	}
+
+	err := logger3.LogDecision(singleRecord)
+	if err != nil {
+		t.Fatalf("Failed to log single decision: %v", err)
+	}
+
+	sharpeRatio3 := concreteLogger3.calculateSharpeRatioFromEquity()
+
+	if sharpeRatio3 != 0 {
+		t.Errorf("Expected Sharpe ratio = 0 for single equity point, got %.4f", sharpeRatio3)
+	}
+
+	t.Logf("✅ Single equity point Sharpe ratio: %.4f (expected 0)", sharpeRatio3)
+
+	// 测试用例4: 空缓存（应该返回0）
+	tmpDir4 := t.TempDir()
+	logger4 := NewDecisionLogger(tmpDir4)
+	concreteLogger4 := logger4.(*DecisionLogger)
+
+	sharpeRatio4 := concreteLogger4.calculateSharpeRatioFromEquity()
+
+	if sharpeRatio4 != 0 {
+		t.Errorf("Expected Sharpe ratio = 0 for empty cache, got %.4f", sharpeRatio4)
+	}
+
+	t.Logf("✅ Empty cache Sharpe ratio: %.4f (expected 0)", sharpeRatio4)
+}
