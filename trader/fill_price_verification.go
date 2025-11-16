@@ -1,0 +1,227 @@
+package trader
+
+import (
+	"log"
+	"math"
+	"nofx/decision"
+	"nofx/logger"
+	"strings"
+	"time"
+)
+
+// verifyAndUpdateActualFillPrice 验证并更新实际成交价格，确保风险不超过 2%
+// 在开仓后立即调用，基于实际成交价格验证风险
+func (at *AutoTrader) verifyAndUpdateActualFillPrice(
+	decision *decision.Decision,
+	actionRecord *logger.DecisionAction,
+	side string, // "long" or "short"
+	estimatedPrice float64, // 开仓前的预估价格
+) error {
+	const maxRetries = 3
+	const retryDelay = 500 * time.Millisecond
+	const maxRiskPercent = 2.0 // 最大风险 2%
+
+	log.Printf("  🔍 验证实际成交价格和风险...")
+
+	// 重试获取持仓数据（交易所可能需要时间更新）
+	var actualEntryPrice float64
+	var positionFound bool
+
+	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			time.Sleep(retryDelay)
+		}
+
+		positions, err := at.trader.GetPositions()
+		if err != nil {
+			log.Printf("  ⚠️ 获取持仓失败 (尝试 %d/%d): %v", i+1, maxRetries, err)
+			continue
+		}
+
+		for _, pos := range positions {
+			if pos["symbol"] == decision.Symbol && pos["side"] == side {
+				if entryPrice, ok := pos["entryPrice"].(float64); ok && entryPrice > 0 {
+					actualEntryPrice = entryPrice
+					positionFound = true
+					break
+				}
+			}
+		}
+
+		if positionFound {
+			break
+		}
+	}
+
+	if !positionFound {
+		log.Printf("  ⚠️ 未能获取实际成交价，使用预估价格 %.2f", estimatedPrice)
+		return nil // 不阻断流程，继续执行
+	}
+
+	// 更新 actionRecord 为实际成交价
+	actionRecord.Price = actualEntryPrice
+
+	// 计算实际滑点
+	slippage := actualEntryPrice - estimatedPrice
+	slippagePct := (slippage / estimatedPrice) * 100
+
+	log.Printf("  📊 成交价格: 预估 %.2f → 实际 %.2f (滑点 %+.2f, %+.2f%%)",
+		estimatedPrice, actualEntryPrice, slippage, slippagePct)
+
+	// 获取账户净值用于风险计算
+	balance, err := at.trader.GetBalance()
+	if err != nil {
+		log.Printf("  ⚠️ 获取账户余额失败: %v", err)
+		return nil // 不阻断流程
+	}
+
+	totalBalance := 0.0
+	if tb, ok := balance["totalBalance"].(float64); ok {
+		totalBalance = tb
+	} else if tb, ok := balance["balance"].(float64); ok {
+		totalBalance = tb
+	}
+
+	if totalBalance <= 0 {
+		log.Printf("  ⚠️ 无法获取账户净值，跳过风险验证")
+		return nil
+	}
+
+	// 计算实际风险
+	actualRisk := calculatePositionRisk(
+		actualEntryPrice,
+		decision.StopLoss,
+		decision.PositionSizeUSD,
+		totalBalance,
+		side,
+	)
+
+	log.Printf("  💰 风险验证: %.2f%% (仓位 $%.2f, 止损 %.2f, 净值 $%.2f)",
+		actualRisk.RiskPercent, decision.PositionSizeUSD, decision.StopLoss, totalBalance)
+
+	// 如果风险超过 2%，采取保护措施
+	if actualRisk.RiskPercent > maxRiskPercent {
+		log.Printf("  🚨 警告：实际风险 %.2f%% 超过 %.2f%% 限制！", actualRisk.RiskPercent, maxRiskPercent)
+		log.Printf("  └─ 价格风险: %.2f%% | 止损金额: $%.2f | 手续费: $%.2f",
+			actualRisk.PriceRiskPercent, actualRisk.StopLossUSD, actualRisk.FeeUSD)
+
+		// 选项1：调整止损到更安全的位置（优先）
+		adjustedStopLoss := calculateMaxStopLoss(
+			actualEntryPrice,
+			decision.PositionSizeUSD,
+			totalBalance,
+			maxRiskPercent,
+			side,
+		)
+
+		if adjustedStopLoss > 0 {
+			log.Printf("  🛡️ 自动调整止损: %.2f → %.2f (确保风险 ≤ %.2f%%)",
+				decision.StopLoss, adjustedStopLoss, maxRiskPercent)
+
+			// 取消旧的止损单
+			if err := at.trader.CancelStopLossOrders(decision.Symbol); err != nil {
+				log.Printf("  ⚠️ 取消旧止损单失败: %v", err)
+			}
+
+			// 设置新的止损
+			quantity := actionRecord.Quantity
+			positionSide := strings.ToUpper(side)
+			if err := at.trader.SetStopLoss(decision.Symbol, positionSide, quantity, adjustedStopLoss); err != nil {
+				log.Printf("  ❌ 调整止损失败: %v，建议手动平仓！", err)
+			} else {
+				// 更新内部记录
+				posKey := decision.Symbol + "_" + side
+				at.positionStopLoss[posKey] = adjustedStopLoss
+				log.Printf("  ✓ 止损已调整，风险已控制在 %.2f%% 以内", maxRiskPercent)
+			}
+		} else {
+			// 选项2：无法通过调整止损控制风险，立即平仓
+			log.Printf("  ⚠️ 无法通过调整止损控制风险，建议立即平仓")
+			log.Printf("  ⚠️ 请在下一个决策周期中给出平仓指令")
+			// 注意：这里不直接平仓，而是让AI在下一个周期决策，避免过度干预
+		}
+	} else {
+		log.Printf("  ✓ 风险验证通过: %.2f%% ≤ %.2f%%", actualRisk.RiskPercent, maxRiskPercent)
+	}
+
+	return nil
+}
+
+// PositionRisk 持仓风险计算结果
+type PositionRisk struct {
+	PriceRiskPercent float64 // 价格风险百分比
+	StopLossUSD      float64 // 止损金额 (USDT)
+	FeeUSD           float64 // 手续费 (USDT)
+	TotalRiskUSD     float64 // 总风险 (USDT)
+	RiskPercent      float64 // 占账户净值的风险百分比
+}
+
+// calculatePositionRisk 计算持仓风险
+func calculatePositionRisk(
+	entryPrice float64,
+	stopLoss float64,
+	positionSizeUSD float64,
+	totalBalance float64,
+	side string, // "long" or "short"
+) PositionRisk {
+	var priceRiskPercent float64
+
+	if side == "short" {
+		// 空单：止损价 > 入场价时亏损
+		priceRiskPercent = (stopLoss - entryPrice) / entryPrice
+	} else {
+		// 多单：止损价 < 入场价时亏损
+		priceRiskPercent = (entryPrice - stopLoss) / entryPrice
+	}
+
+	// 止损金额
+	stopLossUSD := positionSizeUSD * math.Abs(priceRiskPercent)
+
+	// 手续费估算（开仓 + 平仓，Taker 费率 0.05%）
+	feeUSD := positionSizeUSD * 0.0005 * 2
+
+	// 总风险
+	totalRiskUSD := stopLossUSD + feeUSD
+
+	// 风险占比
+	riskPercent := (totalRiskUSD / totalBalance) * 100
+
+	return PositionRisk{
+		PriceRiskPercent: math.Abs(priceRiskPercent) * 100,
+		StopLossUSD:      stopLossUSD,
+		FeeUSD:           feeUSD,
+		TotalRiskUSD:     totalRiskUSD,
+		RiskPercent:      riskPercent,
+	}
+}
+
+// calculateMaxStopLoss 计算满足最大风险限制的止损价格
+func calculateMaxStopLoss(
+	entryPrice float64,
+	positionSizeUSD float64,
+	totalBalance float64,
+	maxRiskPercent float64,
+	side string, // "long" or "short"
+) float64 {
+	// 预留手续费
+	feeUSD := positionSizeUSD * 0.0005 * 2
+	maxRiskUSD := (totalBalance * maxRiskPercent / 100) - feeUSD
+
+	if maxRiskUSD <= 0 {
+		return 0 // 无法满足风险要求
+	}
+
+	// 最大价格风险百分比
+	maxPriceRiskPercent := maxRiskUSD / positionSizeUSD
+
+	var stopLoss float64
+	if side == "short" {
+		// 空单：止损 = 入场价 * (1 + 风险%)
+		stopLoss = entryPrice * (1 + maxPriceRiskPercent)
+	} else {
+		// 多单：止损 = 入场价 * (1 - 风险%)
+		stopLoss = entryPrice * (1 - maxPriceRiskPercent)
+	}
+
+	return stopLoss
+}

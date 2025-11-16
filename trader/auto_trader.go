@@ -825,6 +825,12 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 		at.positionTakeProfit[posKey] = decision.TakeProfit // 记录止盈价格
 	}
 
+	// ✅ 验证实际成交价格和风险（基于实际成交数据）
+	if err := at.verifyAndUpdateActualFillPrice(decision, actionRecord, "long", marketData.CurrentPrice); err != nil {
+		log.Printf("  ⚠️ 实际成交价验证失败: %v", err)
+		// 不阻断流程，继续执行
+	}
+
 	return nil
 }
 
@@ -907,6 +913,12 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 		log.Printf("  ⚠ 设置止盈失败: %v", err)
 	} else {
 		at.positionTakeProfit[posKey] = decision.TakeProfit // 记录止盈价格
+	}
+
+	// ✅ 验证实际成交价格和风险（基于实际成交数据）
+	if err := at.verifyAndUpdateActualFillPrice(decision, actionRecord, "short", marketData.CurrentPrice); err != nil {
+		log.Printf("  ⚠️ 实际成交价验证失败: %v", err)
+		// 不阻断流程，继续执行
 	}
 
 	return nil
