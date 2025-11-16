@@ -1,6 +1,8 @@
 package logger
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -377,6 +379,9 @@ type TradeOutcome struct {
 	OpenTime      time.Time `json:"open_time"`      // 开仓时间
 	CloseTime     time.Time `json:"close_time"`     // 平仓时间
 	WasStopLoss   bool      `json:"was_stop_loss"`  // 是否止损
+
+	// Prompt 版本标识（用于追溯和分组）
+	PromptHash string `json:"prompt_hash,omitempty"` // SystemPrompt 的 MD5 hash
 }
 
 // PerformanceAnalysis 交易表现分析
@@ -898,8 +903,8 @@ func (l *DecisionLogger) updateCacheFromDecision(record *DecisionRecord) {
 				continue
 			}
 
-			// 计算交易结果
-			trade := l.calculateTrade(openPos, decision, record.Exchange)
+			// 计算交易结果（包含 PromptHash）
+			trade := l.calculateTrade(openPos, decision, record.Exchange, record.SystemPrompt)
 
 			// 移除已平仓的持仓
 			delete(l.openPositions, decision.Symbol)
@@ -911,8 +916,33 @@ func (l *DecisionLogger) updateCacheFromDecision(record *DecisionRecord) {
 	}
 }
 
+// calculatePromptHash 计算 SystemPrompt 的 MD5 hash
+func calculatePromptHash(systemPrompt string) string {
+	if systemPrompt == "" {
+		return ""
+	}
+	hash := md5.Sum([]byte(systemPrompt))
+	return hex.EncodeToString(hash[:])
+}
+
+// filterByPromptHash 过滤交易，只保留匹配指定 PromptHash 的交易
+func filterByPromptHash(trades []TradeOutcome, promptHash string) []TradeOutcome {
+	if promptHash == "" {
+		// 如果 hash 为空，返回所有交易（向后兼容）
+		return trades
+	}
+
+	filtered := make([]TradeOutcome, 0, len(trades))
+	for _, trade := range trades {
+		if trade.PromptHash == promptHash {
+			filtered = append(filtered, trade)
+		}
+	}
+	return filtered
+}
+
 // calculateTrade 计算完整交易的盈亏和其他指标
-func (l *DecisionLogger) calculateTrade(openPos *OpenPosition, closeDecision DecisionAction, exchange string) TradeOutcome {
+func (l *DecisionLogger) calculateTrade(openPos *OpenPosition, closeDecision DecisionAction, exchange string, systemPrompt string) TradeOutcome {
 	quantity := openPos.Quantity
 	entryPrice := openPos.EntryPrice
 	exitPrice := closeDecision.Price
@@ -960,6 +990,7 @@ func (l *DecisionLogger) calculateTrade(openPos *OpenPosition, closeDecision Dec
 		OpenTime:      openPos.OpenTime,
 		CloseTime:     closeDecision.Timestamp,
 		WasStopLoss:   false, // TODO: 检测是否止损
+		PromptHash:    calculatePromptHash(systemPrompt),
 	}
 }
 
@@ -1202,31 +1233,44 @@ func (l *DecisionLogger) GetPerformanceWithCache(tradeLimit int) (*PerformanceAn
 	// 获取用于 AI 分析的固定样本（最近 100 笔交易）
 	cachedTrades := l.GetRecentTrades(AIAnalysisSampleSize)
 
+	// 🔍 获取当前的 PromptHash（从最新交易推断）
+	var currentPromptHash string
+	if len(cachedTrades) > 0 {
+		currentPromptHash = cachedTrades[0].PromptHash
+	}
+
+	// 🎯 过滤：只保留匹配当前 PromptHash 的交易
+	filteredTrades := filterByPromptHash(cachedTrades, currentPromptHash)
+
 	var performance *PerformanceAnalysis
 	var err error
 
-	// 如果缓存为空（首次请求或重启后），扫描历史文件初始化缓存
-	if len(cachedTrades) == 0 {
+	// 如果过滤后没有交易（首次请求或重启后），扫描历史文件初始化缓存
+	if len(filteredTrades) == 0 {
 		// 首次请求：扫描历史周期填充缓存
 		performance, err = l.AnalyzePerformance(InitialScanCycles)
 		if err != nil {
 			return nil, fmt.Errorf("初始化缓存失败: %w", err)
 		}
-		// 重新获取分析样本
+		// 重新获取分析样本并过滤
 		cachedTrades = l.GetRecentTrades(AIAnalysisSampleSize)
+		if len(cachedTrades) > 0 {
+			currentPromptHash = cachedTrades[0].PromptHash
+		}
+		filteredTrades = filterByPromptHash(cachedTrades, currentPromptHash)
 	} else {
-		// ✅ 缓存已有数据：直接从缓存计算所有统计信息
-		performance = l.calculateStatisticsFromTrades(cachedTrades)
+		// ✅ 缓存已有数据：基于过滤后的交易计算统计信息
+		performance = l.calculateStatisticsFromTrades(filteredTrades)
 
 		// ✅ 从equity缓存计算SharpeRatio
 		performance.SharpeRatio = l.calculateSharpeRatioFromEquity()
 	}
 
-	// 使用缓存数据，限制为请求的条数
-	if len(cachedTrades) > tradeLimit {
-		performance.RecentTrades = cachedTrades[:tradeLimit]
+	// 使用过滤后的数据，限制为请求的条数
+	if len(filteredTrades) > tradeLimit {
+		performance.RecentTrades = filteredTrades[:tradeLimit]
 	} else {
-		performance.RecentTrades = cachedTrades
+		performance.RecentTrades = filteredTrades
 	}
 
 	return performance, nil

@@ -1413,3 +1413,324 @@ func TestSharpeRatioCalculation(t *testing.T) {
 
 	t.Logf("✅ Empty cache Sharpe ratio: %.4f (expected 0)", sharpeRatio4)
 }
+
+// TestPromptHashInTradeOutcome 测试 TradeOutcome 中正确记录 PromptHash
+func TestPromptHashInTradeOutcome(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := NewDecisionLogger(tmpDir)
+
+	baseTime := time.Now()
+	systemPrompt1 := "你是一个保守型交易员，注重风险控制。"
+	systemPrompt2 := "你是一个激进型交易员，追求高收益。"
+
+	// 场景1: 使用第一个 prompt 做一笔交易
+	openRecord1 := &DecisionRecord{
+		Timestamp:    baseTime,
+		Success:      true,
+		Exchange:     "binance",
+		SystemPrompt: systemPrompt1,
+		Decisions: []DecisionAction{
+			{
+				Action:    "open_long",
+				Symbol:    "BTC",
+				Price:     50000,
+				Quantity:  0.1,
+				Leverage:  10,
+				Timestamp: baseTime,
+				Success:   true,
+			},
+		},
+		AccountState: AccountSnapshot{
+			TotalBalance: 10000,
+		},
+	}
+
+	closeRecord1 := &DecisionRecord{
+		Timestamp:    baseTime.Add(1 * time.Hour),
+		Success:      true,
+		Exchange:     "binance",
+		SystemPrompt: systemPrompt1, // 相同的 prompt
+		Decisions: []DecisionAction{
+			{
+				Action:    "close_long",
+				Symbol:    "BTC",
+				Price:     51000,
+				Quantity:  0.1,
+				Timestamp: baseTime.Add(1 * time.Hour),
+				Success:   true,
+			},
+		},
+		AccountState: AccountSnapshot{
+			TotalBalance: 10100,
+		},
+	}
+
+	// 记录开仓和平仓
+	if err := logger.LogDecision(openRecord1); err != nil {
+		t.Fatalf("Failed to log open decision: %v", err)
+	}
+	if err := logger.LogDecision(closeRecord1); err != nil {
+		t.Fatalf("Failed to log close decision: %v", err)
+	}
+
+	// 场景2: 使用第二个 prompt 做另一笔交易
+	openRecord2 := &DecisionRecord{
+		Timestamp:    baseTime.Add(2 * time.Hour),
+		Success:      true,
+		Exchange:     "binance",
+		SystemPrompt: systemPrompt2, // 不同的 prompt
+		Decisions: []DecisionAction{
+			{
+				Action:    "open_short",
+				Symbol:    "ETH",
+				Price:     3000,
+				Quantity:  1.0,
+				Leverage:  10,
+				Timestamp: baseTime.Add(2 * time.Hour),
+				Success:   true,
+			},
+		},
+		AccountState: AccountSnapshot{
+			TotalBalance: 10100,
+		},
+	}
+
+	closeRecord2 := &DecisionRecord{
+		Timestamp:    baseTime.Add(3 * time.Hour),
+		Success:      true,
+		Exchange:     "binance",
+		SystemPrompt: systemPrompt2, // 相同的 prompt
+		Decisions: []DecisionAction{
+			{
+				Action:    "close_short",
+				Symbol:    "ETH",
+				Price:     2950,
+				Quantity:  1.0,
+				Timestamp: baseTime.Add(3 * time.Hour),
+				Success:   true,
+			},
+		},
+		AccountState: AccountSnapshot{
+			TotalBalance: 10150,
+		},
+	}
+
+	// 记录开仓和平仓
+	if err := logger.LogDecision(openRecord2); err != nil {
+		t.Fatalf("Failed to log open decision: %v", err)
+	}
+	if err := logger.LogDecision(closeRecord2); err != nil {
+		t.Fatalf("Failed to log close decision: %v", err)
+	}
+
+	// 等待缓存更新
+	time.Sleep(10 * time.Millisecond)
+
+	// 验证缓存中的交易
+	trades := logger.GetRecentTrades(10)
+
+	if len(trades) != 2 {
+		t.Fatalf("Expected 2 trades, got %d", len(trades))
+	}
+
+	// 验证第一笔交易的 PromptHash
+	trade1 := trades[1] // 最旧的（第一笔）
+	if trade1.PromptHash == "" {
+		t.Errorf("❌ Trade 1 PromptHash is empty")
+	}
+
+	// 验证第二笔交易的 PromptHash
+	trade2 := trades[0] // 最新的（第二笔）
+	if trade2.PromptHash == "" {
+		t.Errorf("❌ Trade 2 PromptHash is empty")
+	}
+
+	// 验证不同的 prompt 产生不同的 hash
+	if trade1.PromptHash == trade2.PromptHash {
+		t.Errorf("❌ Different prompts should have different hashes, but got same: %s", trade1.PromptHash)
+	}
+
+	// 验证 hash 的长度（MD5 应该是 32 字符）
+	if len(trade1.PromptHash) != 32 {
+		t.Errorf("❌ PromptHash should be 32 characters (MD5), got %d", len(trade1.PromptHash))
+	}
+
+	t.Logf("✅ Prompt hash verification passed:")
+	t.Logf("   Trade 1 (conservative): %s", trade1.PromptHash)
+	t.Logf("   Trade 2 (aggressive):   %s", trade2.PromptHash)
+	t.Logf("   Hashes are different:   %v", trade1.PromptHash != trade2.PromptHash)
+}
+
+// TestGetPerformanceFilteredByPromptHash 验证 GetPerformanceWithCache 只返回当前 PromptHash 的交易统计
+func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := NewDecisionLogger(tmpDir)
+
+	baseTime := time.Now()
+	prompt1 := "你是一个保守型交易员，注重风险控制。"
+	prompt2 := "你是一个激进型交易员，追求高收益。"
+
+	// === 先记录 3 笔使用 prompt1 的交易 ===
+
+	// Trade 1 (prompt1): BTC LONG, profit
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-5 * time.Minute),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt1,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "open_long", Symbol: "BTC", Price: 50000, Quantity: 0.1, Leverage: 10, Timestamp: baseTime.Add(-5 * time.Minute), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-4 * time.Minute),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt1,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "close_long", Symbol: "BTC", Price: 51000, Timestamp: baseTime.Add(-4 * time.Minute), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	// Trade 2 (prompt1): ETH SHORT, loss
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-3 * time.Minute),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt1,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "open_short", Symbol: "ETH", Price: 3000, Quantity: 1.0, Leverage: 10, Timestamp: baseTime.Add(-3 * time.Minute), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-2 * time.Minute),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt1,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "close_short", Symbol: "ETH", Price: 2950, Timestamp: baseTime.Add(-2 * time.Minute), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	// Trade 3 (prompt1): SOL LONG, profit
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-90 * time.Second),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt1,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "open_long", Symbol: "SOL", Price: 100, Quantity: 10, Leverage: 10, Timestamp: baseTime.Add(-90 * time.Second), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-60 * time.Second),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt1,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "close_long", Symbol: "SOL", Price: 110, Timestamp: baseTime.Add(-60 * time.Second), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	// === 然后记录 2 笔使用 prompt2 的交易（更新的） ===
+
+	// Trade 4 (prompt2): AVAX LONG, loss
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-30 * time.Second),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt2,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "open_long", Symbol: "AVAX", Price: 40, Quantity: 10, Leverage: 10, Timestamp: baseTime.Add(-30 * time.Second), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-20 * time.Second),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt2,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "close_long", Symbol: "AVAX", Price: 38, Timestamp: baseTime.Add(-20 * time.Second), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	// Trade 5 (prompt2): LINK SHORT, loss
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime.Add(-10 * time.Second),
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt2,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "open_short", Symbol: "LINK", Price: 20, Quantity: 20, Leverage: 10, Timestamp: baseTime.Add(-10 * time.Second), Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	if err := logger.LogDecision(&DecisionRecord{
+		Timestamp:    baseTime,
+		Exchange:     "hyperliquid",
+		SystemPrompt: prompt2,
+		Success:      true,
+		Decisions: []DecisionAction{
+			{Action: "close_short", Symbol: "LINK", Price: 21, Timestamp: baseTime, Success: true},
+		},
+	}); err != nil {
+		t.Fatalf("Failed to log decision: %v", err)
+	}
+
+	// === 验证：GetPerformanceWithCache 应该只返回 prompt2 的统计 ===
+	performance, err := logger.GetPerformanceWithCache(100)
+	if err != nil {
+		t.Fatalf("❌ GetPerformanceWithCache failed: %v", err)
+	}
+
+	// 验证 1: TotalTrades 应该是 2（只计算 prompt2 的交易）
+	if performance.TotalTrades != 2 {
+		t.Errorf("❌ Expected TotalTrades = 2 (only prompt2), got %d", performance.TotalTrades)
+	}
+
+	// 验证 2: WinRate 应该是 0%（prompt2 的两笔都是亏损）
+	if performance.WinRate != 0.0 {
+		t.Errorf("❌ Expected WinRate = 0%% (both prompt2 trades are losses), got %.2f%%", performance.WinRate)
+	}
+
+	// 验证 3: RecentTrades 应该只包含 prompt2 的交易
+	if len(performance.RecentTrades) != 2 {
+		t.Errorf("❌ Expected 2 recent trades (prompt2 only), got %d", len(performance.RecentTrades))
+	}
+
+	// 验证 4: RecentTrades 的 PromptHash 应该都是 prompt2 的 hash
+	prompt2Hash := calculatePromptHash(prompt2)
+	for i, trade := range performance.RecentTrades {
+		if trade.PromptHash != prompt2Hash {
+			t.Errorf("❌ Trade %d has wrong PromptHash: expected %s, got %s", i, prompt2Hash, trade.PromptHash)
+		}
+	}
+
+	t.Logf("✅ GetPerformanceWithCache correctly filters by current PromptHash:")
+	t.Logf("   Total trades in cache: 5 (3 from prompt1, 2 from prompt2)")
+	t.Logf("   Current PromptHash: %s (prompt2)", prompt2Hash)
+	t.Logf("   Filtered TotalTrades: %d", performance.TotalTrades)
+	t.Logf("   Filtered WinRate: %.2f%%", performance.WinRate)
+}
