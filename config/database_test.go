@@ -658,6 +658,18 @@ func TestDataPersistenceAcrossReopen(t *testing.T) {
 		}
 		db.SetCryptoService(cryptoService)
 
+		// 创建测试用户（因为 exchanges 表有 FK 约束）
+		user := &User{
+			ID:           userID,
+			Email:        userID + "@test.com",
+			PasswordHash: "hash",
+			OTPSecret:    "",
+			OTPVerified:  false,
+		}
+		if err := db.CreateUser(user); err != nil {
+			t.Fatalf("创建用户失败: %v", err)
+		}
+
 		// 写入交易所配置
 		err = db.UpdateExchange(
 			userID,
@@ -725,6 +737,28 @@ func TestDataPersistenceAcrossReopen(t *testing.T) {
 func TestConcurrentWritesWithWAL(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
+
+	// 创建测试用户（因为 exchanges 表有 FK 约束）
+	user1 := &User{
+		ID:           "user1",
+		Email:        "user1@test.com",
+		PasswordHash: "hash1",
+		OTPSecret:    "",
+		OTPVerified:  false,
+	}
+	user2 := &User{
+		ID:           "user2",
+		Email:        "user2@test.com",
+		PasswordHash: "hash2",
+		OTPSecret:    "",
+		OTPVerified:  false,
+	}
+	if err := db.CreateUser(user1); err != nil {
+		t.Fatalf("创建user1失败: %v", err)
+	}
+	if err := db.CreateUser(user2); err != nil {
+		t.Fatalf("创建user2失败: %v", err)
+	}
 
 	// 这个测试验证多个并发写入可以成功
 	// WAL 模式下并发性能更好,但 SQLite 仍然可能出现短暂的锁
