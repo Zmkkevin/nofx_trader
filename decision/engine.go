@@ -479,8 +479,9 @@ func buildUserPrompt(ctx *Context) string {
 				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration, stopLossTakeProfitInfo))
 
 			// 使用FormatMarketData输出完整市场数据
+			// skipSymbolMention=true 因为 Symbol 已经在上面的 header 中显示了
 			if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
-				sb.WriteString(market.Format(marketData))
+				sb.WriteString(market.Format(marketData, true))
 				sb.WriteString("\n")
 			}
 		}
@@ -489,6 +490,7 @@ func buildUserPrompt(ctx *Context) string {
 	}
 
 	// 候选币种（完整市场数据）
+	// 只显示未持仓的币种，避免重复
 	sb.WriteString(fmt.Sprintf("## 候选币种 (%d个)\n\n", len(ctx.MarketDataMap)))
 	displayedCount := 0
 	for _, coin := range ctx.CandidateCoins {
@@ -496,6 +498,19 @@ func buildUserPrompt(ctx *Context) string {
 		if !hasData {
 			continue
 		}
+
+		// 检查是否已经持仓，如果已持仓则跳过（避免重复）
+		isHeldPosition := false
+		for _, pos := range ctx.Positions {
+			if pos.Symbol == coin.Symbol {
+				isHeldPosition = true
+				break
+			}
+		}
+		if isHeldPosition {
+			continue
+		}
+
 		displayedCount++
 
 		sourceTags := ""
@@ -506,8 +521,9 @@ func buildUserPrompt(ctx *Context) string {
 		}
 
 		// 使用FormatMarketData输出完整市场数据
+		// skipSymbolMention=false 因为这是候选币种列表，需要显示币种名称
 		sb.WriteString(fmt.Sprintf("### %d. %s%s\n\n", displayedCount, coin.Symbol, sourceTags))
-		sb.WriteString(market.Format(marketData))
+		sb.WriteString(market.Format(marketData, false))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")

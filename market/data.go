@@ -414,8 +414,9 @@ func getFundingRate(symbol string) (float64, error) {
 	return rate, nil
 }
 
-// Format 格式化输出市场数据
-func Format(data *Data) string {
+// Format 格式化市场数据为字符串
+// skipSymbolMention: 如果为 true，在描述 OI/Funding 时不提及币种名称（避免重复）
+func Format(data *Data, skipSymbolMention bool) string {
 	var sb strings.Builder
 
 	// 使用动态精度格式化价格
@@ -423,8 +424,12 @@ func Format(data *Data) string {
 	sb.WriteString(fmt.Sprintf("current_price = %s, current_ema20 = %.3f, current_macd = %.3f, current_rsi (7 period) = %.3f\n\n",
 		priceStr, data.CurrentEMA20, data.CurrentMACD, data.CurrentRSI7))
 
-	sb.WriteString(fmt.Sprintf("In addition, here is the latest %s open interest and funding rate for perps:\n\n",
-		data.Symbol))
+	if skipSymbolMention {
+		sb.WriteString("Here is the latest open interest and funding rate for perps:\n\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("In addition, here is the latest %s open interest and funding rate for perps:\n\n",
+			data.Symbol))
+	}
 
 	if data.OpenInterest != nil {
 		// 使用动态精度格式化 OI 数据
