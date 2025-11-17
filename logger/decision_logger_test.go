@@ -1423,12 +1423,17 @@ func TestPromptHashInTradeOutcome(t *testing.T) {
 	systemPrompt1 := "你是一个保守型交易员，注重风险控制。"
 	systemPrompt2 := "你是一个激进型交易员，追求高收益。"
 
+	// 模拟 PromptHash（实际由 decision engine 计算）
+	promptHash1 := "conservative_prompt_hash_12345678"
+	promptHash2 := "aggressive_prompt_hash_87654321"
+
 	// 场景1: 使用第一个 prompt 做一笔交易
 	openRecord1 := &DecisionRecord{
 		Timestamp:    baseTime,
 		Success:      true,
 		Exchange:     "binance",
 		SystemPrompt: systemPrompt1,
+		PromptHash:   promptHash1,
 		Decisions: []DecisionAction{
 			{
 				Action:    "open_long",
@@ -1450,6 +1455,7 @@ func TestPromptHashInTradeOutcome(t *testing.T) {
 		Success:      true,
 		Exchange:     "binance",
 		SystemPrompt: systemPrompt1, // 相同的 prompt
+		PromptHash:   promptHash1,   // 相同的 hash
 		Decisions: []DecisionAction{
 			{
 				Action:    "close_long",
@@ -1479,6 +1485,7 @@ func TestPromptHashInTradeOutcome(t *testing.T) {
 		Success:      true,
 		Exchange:     "binance",
 		SystemPrompt: systemPrompt2, // 不同的 prompt
+		PromptHash:   promptHash2,   // 不同的 hash
 		Decisions: []DecisionAction{
 			{
 				Action:    "open_short",
@@ -1500,6 +1507,7 @@ func TestPromptHashInTradeOutcome(t *testing.T) {
 		Success:      true,
 		Exchange:     "binance",
 		SystemPrompt: systemPrompt2, // 相同的 prompt
+		PromptHash:   promptHash2,   // 相同的 hash
 		Decisions: []DecisionAction{
 			{
 				Action:    "close_short",
@@ -1550,9 +1558,12 @@ func TestPromptHashInTradeOutcome(t *testing.T) {
 		t.Errorf("❌ Different prompts should have different hashes, but got same: %s", trade1.PromptHash)
 	}
 
-	// 验证 hash 的长度（MD5 应该是 32 字符）
-	if len(trade1.PromptHash) != 32 {
-		t.Errorf("❌ PromptHash should be 32 characters (MD5), got %d", len(trade1.PromptHash))
+	// 验证 hash 与预期一致
+	if trade1.PromptHash != promptHash1 {
+		t.Errorf("❌ Trade 1 PromptHash mismatch: expected %s, got %s", promptHash1, trade1.PromptHash)
+	}
+	if trade2.PromptHash != promptHash2 {
+		t.Errorf("❌ Trade 2 PromptHash mismatch: expected %s, got %s", promptHash2, trade2.PromptHash)
 	}
 
 	t.Logf("✅ Prompt hash verification passed:")
@@ -1570,6 +1581,10 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 	prompt1 := "你是一个保守型交易员，注重风险控制。"
 	prompt2 := "你是一个激进型交易员，追求高收益。"
 
+	// 模拟 PromptHash
+	promptHash1 := "prompt1_hash_conservative_123456"
+	promptHash2 := "prompt2_hash_aggressive_654321"
+
 	// === 先记录 3 笔使用 prompt1 的交易 ===
 
 	// Trade 1 (prompt1): BTC LONG, profit
@@ -1577,6 +1592,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-5 * time.Minute),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt1,
+		PromptHash:   promptHash1,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "open_long", Symbol: "BTC", Price: 50000, Quantity: 0.1, Leverage: 10, Timestamp: baseTime.Add(-5 * time.Minute), Success: true},
@@ -1589,6 +1605,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-4 * time.Minute),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt1,
+		PromptHash:   promptHash1,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "close_long", Symbol: "BTC", Price: 51000, Timestamp: baseTime.Add(-4 * time.Minute), Success: true},
@@ -1602,6 +1619,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-3 * time.Minute),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt1,
+		PromptHash:   promptHash1,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "open_short", Symbol: "ETH", Price: 3000, Quantity: 1.0, Leverage: 10, Timestamp: baseTime.Add(-3 * time.Minute), Success: true},
@@ -1614,6 +1632,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-2 * time.Minute),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt1,
+		PromptHash:   promptHash1,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "close_short", Symbol: "ETH", Price: 2950, Timestamp: baseTime.Add(-2 * time.Minute), Success: true},
@@ -1627,6 +1646,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-90 * time.Second),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt1,
+		PromptHash:   promptHash1,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "open_long", Symbol: "SOL", Price: 100, Quantity: 10, Leverage: 10, Timestamp: baseTime.Add(-90 * time.Second), Success: true},
@@ -1639,6 +1659,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-60 * time.Second),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt1,
+		PromptHash:   promptHash1,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "close_long", Symbol: "SOL", Price: 110, Timestamp: baseTime.Add(-60 * time.Second), Success: true},
@@ -1654,6 +1675,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-30 * time.Second),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt2,
+		PromptHash:   promptHash2,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "open_long", Symbol: "AVAX", Price: 40, Quantity: 10, Leverage: 10, Timestamp: baseTime.Add(-30 * time.Second), Success: true},
@@ -1666,6 +1688,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-20 * time.Second),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt2,
+		PromptHash:   promptHash2,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "close_long", Symbol: "AVAX", Price: 38, Timestamp: baseTime.Add(-20 * time.Second), Success: true},
@@ -1679,6 +1702,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime.Add(-10 * time.Second),
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt2,
+		PromptHash:   promptHash2,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "open_short", Symbol: "LINK", Price: 20, Quantity: 20, Leverage: 10, Timestamp: baseTime.Add(-10 * time.Second), Success: true},
@@ -1691,6 +1715,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 		Timestamp:    baseTime,
 		Exchange:     "hyperliquid",
 		SystemPrompt: prompt2,
+		PromptHash:   promptHash2,
 		Success:      true,
 		Decisions: []DecisionAction{
 			{Action: "close_short", Symbol: "LINK", Price: 21, Timestamp: baseTime, Success: true},
@@ -1721,10 +1746,9 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 	}
 
 	// 验证 4: RecentTrades 的 PromptHash 应该都是 prompt2 的 hash
-	prompt2Hash := calculatePromptHash(prompt2)
 	for i, trade := range performance.RecentTrades {
-		if trade.PromptHash != prompt2Hash {
-			t.Errorf("❌ Trade %d has wrong PromptHash: expected %s, got %s", i, prompt2Hash, trade.PromptHash)
+		if trade.PromptHash != promptHash2 {
+			t.Errorf("❌ Trade %d has wrong PromptHash: expected %s, got %s", i, promptHash2, trade.PromptHash)
 		}
 	}
 
@@ -1736,7 +1760,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 
 	t.Logf("✅ GetPerformanceWithCache correctly filters by current PromptHash:")
 	t.Logf("   Total trades in cache: 5 (3 from prompt1, 2 from prompt2)")
-	t.Logf("   Current PromptHash: %s (prompt2)", prompt2Hash)
+	t.Logf("   Current PromptHash: %s (prompt2)", promptHash2)
 	t.Logf("   Filtered TotalTrades: %d", performance.TotalTrades)
 	t.Logf("   Filtered WinRate: %.2f%%", performance.WinRate)
 }
@@ -1750,6 +1774,10 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 	prompt1 := "保守策略"
 	prompt2 := "激进策略"
 
+	// 模拟 PromptHash
+	promptHash1 := "conservative_strategy_hash_111111"
+	promptHash2 := "aggressive_strategy_hash_222222"
+
 	// === 场景1：使用 prompt1 创建稳定盈利的交易序列 ===
 	// 连续盈利：+100, +100, +100 (低波动，高 Sharpe)
 	for i := 0; i < 3; i++ {
@@ -1760,6 +1788,7 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 			Timestamp:    baseTime.Add(time.Duration(i*2) * time.Minute),
 			Exchange:     "hyperliquid",
 			SystemPrompt: prompt1,
+			PromptHash:   promptHash1,
 			Success:      true,
 			Decisions: []DecisionAction{
 				{Action: "open_long", Symbol: "BTC", Price: openPrice, Quantity: 0.1, Leverage: 10, Timestamp: baseTime.Add(time.Duration(i*2) * time.Minute), Success: true},
@@ -1772,6 +1801,7 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 			Timestamp:    baseTime.Add(time.Duration(i*2+1) * time.Minute),
 			Exchange:     "hyperliquid",
 			SystemPrompt: prompt1,
+			PromptHash:   promptHash1,
 			Success:      true,
 			Decisions: []DecisionAction{
 				{Action: "close_long", Symbol: "BTC", Price: closePrice, Timestamp: baseTime.Add(time.Duration(i*2+1) * time.Minute), Success: true},
@@ -1800,6 +1830,7 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 			Timestamp:    baseTime.Add(time.Duration(6+i*2) * time.Minute),
 			Exchange:     "hyperliquid",
 			SystemPrompt: prompt2,
+			PromptHash:   promptHash2,
 			Success:      true,
 			Decisions: []DecisionAction{
 				{Action: action, Symbol: "ETH", Price: openPrice, Quantity: 0.1, Leverage: 10, Timestamp: baseTime.Add(time.Duration(6+i*2) * time.Minute), Success: true},
@@ -1812,6 +1843,7 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 			Timestamp:    baseTime.Add(time.Duration(6+i*2+1) * time.Minute),
 			Exchange:     "hyperliquid",
 			SystemPrompt: prompt2,
+			PromptHash:   promptHash2,
 			Success:      true,
 			Decisions: []DecisionAction{
 				{Action: "close_long", Symbol: "ETH", Price: closePrice, Timestamp: baseTime.Add(time.Duration(6+i*2+1) * time.Minute), Success: true},
@@ -1828,9 +1860,8 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 	}
 
 	// 验证：当前显示的是 prompt2 的数据
-	prompt2Hash := calculatePromptHash(prompt2)
 	if len(performance.RecentTrades) > 0 {
-		if performance.RecentTrades[0].PromptHash != prompt2Hash {
+		if performance.RecentTrades[0].PromptHash != promptHash2 {
 			t.Errorf("❌ Expected current prompt to be prompt2, got hash: %s", performance.RecentTrades[0].PromptHash)
 		}
 	}
@@ -1847,7 +1878,7 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 	// 我们验证 SharpeRatio 确实是基于 filteredTrades 计算的
 
 	t.Logf("✅ SharpeRatio filtered by PromptHash:")
-	t.Logf("   Current PromptHash: %s (prompt2)", prompt2Hash)
+	t.Logf("   Current PromptHash: %s (prompt2)", promptHash2)
 	t.Logf("   Filtered TotalTrades: %d", performance.TotalTrades)
 	t.Logf("   Filtered SharpeRatio: %.4f", performance.SharpeRatio)
 	t.Logf("   Note: This Sharpe should be based on prompt2's volatile trades (+500, -400, +300)")

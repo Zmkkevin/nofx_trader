@@ -1,8 +1,6 @@
 package logger
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -922,14 +920,6 @@ func (l *DecisionLogger) updateCacheFromDecision(record *DecisionRecord) {
 	}
 }
 
-// calculatePromptHash 计算 SystemPrompt 的 MD5 hash
-func calculatePromptHash(systemPrompt string) string {
-	if systemPrompt == "" {
-		return ""
-	}
-	hash := md5.Sum([]byte(systemPrompt))
-	return hex.EncodeToString(hash[:])
-}
 
 // filterByPromptHash 过滤交易，只保留匹配指定 PromptHash 的交易
 func filterByPromptHash(trades []TradeOutcome, promptHash string) []TradeOutcome {
