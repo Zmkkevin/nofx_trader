@@ -1,6 +1,8 @@
 package decision
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -122,7 +124,8 @@ type FullDecision struct {
 	Decisions    []Decision `json:"decisions"`     // 具体决策列表
 	Timestamp    time.Time  `json:"timestamp"`
 	// AIRequestDurationMs 记录 AI API 调用耗时（毫秒）方便排查延迟问题
-	AIRequestDurationMs int64 `json:"ai_request_duration_ms,omitempty"`
+	AIRequestDurationMs int64  `json:"ai_request_duration_ms,omitempty"`
+	PromptHash          string `json:"prompt_hash,omitempty"` // Prompt 模板的 hash（用于区分不同版本）
 }
 
 // GetFullDecision 获取AI的完整交易决策（批量分析所有币种和持仓）
@@ -137,11 +140,14 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient mcp.AIClient, custo
 		return nil, fmt.Errorf("获取市场数据失败: %w", err)
 	}
 
-	// 2. 构建 System Prompt（固定规则）和 User Prompt（动态数据）
+	// 2. 计算 Prompt Hash（基于模板文件内容，不受动态值影响）
+	promptHash := calculatePromptHashFromTemplate(templateName, customPrompt, overrideBase)
+
+	// 3. 构建 System Prompt（固定规则）和 User Prompt（动态数据）
 	systemPrompt := buildSystemPromptWithCustom(ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage, customPrompt, overrideBase, templateName)
 	userPrompt := buildUserPrompt(ctx)
 
-	// 3. 调用AI API（使用 system + user prompt）
+	// 4. 调用AI API（使用 system + user prompt）
 	aiCallStart := time.Now()
 	aiResponse, err := mcpClient.CallWithMessages(systemPrompt, userPrompt)
 	aiCallDuration := time.Since(aiCallStart)
@@ -149,14 +155,15 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient mcp.AIClient, custo
 		return nil, fmt.Errorf("调用AI API失败: %w", err)
 	}
 
-	// 4. 解析AI响应
+	// 5. 解析AI响应
 	decision, err := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage, ctx.Exchange)
 
-	// 无论是否有错误，都要保存 SystemPrompt 和 UserPrompt（用于调试和决策未执行后的问题定位）
+	// 无论是否有错误，都要保存 SystemPrompt、UserPrompt 和 PromptHash（用于调试和决策未执行后的问题定位）
 	if decision != nil {
 		decision.Timestamp = time.Now()
 		decision.SystemPrompt = systemPrompt // 保存系统prompt
 		decision.UserPrompt = userPrompt     // 保存输入prompt
+		decision.PromptHash = promptHash     // 保存 prompt hash
 		decision.AIRequestDurationMs = aiCallDuration.Milliseconds()
 	}
 
@@ -167,6 +174,7 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient mcp.AIClient, custo
 	decision.Timestamp = time.Now()
 	decision.SystemPrompt = systemPrompt // 保存系统prompt
 	decision.UserPrompt = userPrompt     // 保存输入prompt
+	decision.PromptHash = promptHash     // 保存 prompt hash
 	return decision, nil
 }
 
@@ -274,6 +282,46 @@ func calculateMaxCandidates(ctx *Context) int {
 
 	// 返回实际候选币数量和上限中的较小值
 	return min(len(ctx.CandidateCoins), maxCandidates)
+}
+
+// calculatePromptHashFromTemplate 计算 Prompt Hash（基于模板内容，不受动态值影响）
+// 规则：只基于模板文件内容和 customPrompt，不包含 accountEquity 等动态值
+func calculatePromptHashFromTemplate(templateName string, customPrompt string, overrideBase bool) string {
+	var content strings.Builder
+
+	// 如果覆盖基础 prompt 且有自定义 prompt，只使用自定义 prompt
+	if overrideBase && customPrompt != "" {
+		content.WriteString(customPrompt)
+	} else {
+		// 获取模板内容
+		if templateName == "" {
+			templateName = "default"
+		}
+
+		template, err := GetPromptTemplate(templateName)
+		if err != nil {
+			// 模板不存在，尝试 default
+			template, err = GetPromptTemplate("default")
+			if err != nil {
+				// 连 default 都不存在，使用固定字符串
+				content.WriteString("builtin_fallback_prompt")
+			} else {
+				content.WriteString(template.Content)
+			}
+		} else {
+			content.WriteString(template.Content)
+		}
+
+		// 添加自定义 prompt（如果有）
+		if customPrompt != "" {
+			content.WriteString("\n\n# CUSTOM\n")
+			content.WriteString(customPrompt)
+		}
+	}
+
+	// 计算 MD5 hash
+	hash := md5.Sum([]byte(content.String()))
+	return hex.EncodeToString(hash[:])
 }
 
 // buildSystemPromptWithCustom 构建包含自定义内容的 System Prompt

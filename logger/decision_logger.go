@@ -42,7 +42,8 @@ type DecisionRecord struct {
 	Success        bool               `json:"success"`         // 是否成功
 	ErrorMessage   string             `json:"error_message"`   // 错误信息（如果有）
 	// AIRequestDurationMs 记录 AI API 调用耗时（毫秒），方便评估调用性能
-	AIRequestDurationMs int64 `json:"ai_request_duration_ms,omitempty"`
+	AIRequestDurationMs int64  `json:"ai_request_duration_ms,omitempty"`
+	PromptHash          string `json:"prompt_hash,omitempty"` // Prompt模板版本哈希
 }
 
 // AccountSnapshot 账户状态快照
@@ -909,7 +910,7 @@ func (l *DecisionLogger) updateCacheFromDecision(record *DecisionRecord) {
 			}
 
 			// 计算交易结果（包含 PromptHash）
-			trade := l.calculateTrade(openPos, decision, record.Exchange, record.SystemPrompt)
+			trade := l.calculateTrade(openPos, decision, record.Exchange, record.PromptHash)
 
 			// 移除已平仓的持仓
 			delete(l.openPositions, decision.Symbol)
@@ -1009,7 +1010,7 @@ func (l *DecisionLogger) calculateSharpeRatioFromTrades(trades []TradeOutcome) f
 }
 
 // calculateTrade 计算完整交易的盈亏和其他指标
-func (l *DecisionLogger) calculateTrade(openPos *OpenPosition, closeDecision DecisionAction, exchange string, systemPrompt string) TradeOutcome {
+func (l *DecisionLogger) calculateTrade(openPos *OpenPosition, closeDecision DecisionAction, exchange string, promptHash string) TradeOutcome {
 	quantity := openPos.Quantity
 	entryPrice := openPos.EntryPrice
 	exitPrice := closeDecision.Price
@@ -1057,7 +1058,7 @@ func (l *DecisionLogger) calculateTrade(openPos *OpenPosition, closeDecision Dec
 		OpenTime:      openPos.OpenTime,
 		CloseTime:     closeDecision.Timestamp,
 		WasStopLoss:   false, // TODO: 检测是否止损
-		PromptHash:    calculatePromptHash(systemPrompt),
+		PromptHash:    promptHash,
 	}
 }
 

@@ -448,6 +448,7 @@ func (at *AutoTrader) runCycle() error {
 		record.SystemPrompt = decision.SystemPrompt // 保存系统提示词
 		record.InputPrompt = decision.UserPrompt
 		record.CoTTrace = decision.CoTTrace
+		record.PromptHash = decision.PromptHash // 保存Prompt模板版本哈希
 		if len(decision.Decisions) > 0 {
 			decisionJSON, _ := json.MarshalIndent(decision.Decisions, "", "  ")
 			record.DecisionJSON = string(decisionJSON)
