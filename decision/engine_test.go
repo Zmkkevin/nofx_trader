@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"nofx/market"
 	"strings"
 	"testing"
 )
@@ -223,4 +224,99 @@ func TestBuildPromptSnapshotConsistency(t *testing.T) {
 	if snapshot1 != snapshot2 {
 		t.Error("相同参数生成的快照应该一致")
 	}
+}
+
+// TestBuildUserPrompt_ShowsStopLossAndTakeProfit 测试持仓信息中显示止损和止盈
+func TestBuildUserPrompt_ShowsStopLossAndTakeProfit(t *testing.T) {
+	t.Run("持仓有止损和止盈时应该在prompt中显示", func(t *testing.T) {
+		ctx := &Context{
+			CurrentTime:    "2025-01-17 12:00:00",
+			RuntimeMinutes: 30,
+			CallCount:      5,
+			Account: AccountInfo{
+				TotalEquity:      10000.0,
+				AvailableBalance: 5000.0,
+				UnrealizedPnL:    100.0,
+				TotalPnL:         100.0,
+				TotalPnLPct:      1.0,
+				MarginUsed:       3000.0,
+				MarginUsedPct:    30.0,
+				PositionCount:    1,
+			},
+			Positions: []PositionInfo{
+				{
+					Symbol:           "BTCUSDT",
+					Side:             "short",
+					EntryPrice:       95462.0,
+					MarkPrice:        94616.0,
+					Quantity:         0.1,
+					Leverage:         5,
+					UnrealizedPnL:    84.6,
+					UnrealizedPnLPct: 0.89,
+					PeakPnLPct:       1.2,
+					LiquidationPrice: 120000.0,
+					MarginUsed:       1909.24,
+					UpdateTime:       1700000000000,
+					StopLoss:         94571.0, // 设置了止损
+					TakeProfit:       93000.0, // 设置了止盈
+				},
+			},
+			CandidateCoins: []CandidateCoin{},
+			MarketDataMap:  make(map[string]*market.Data),
+		}
+
+		prompt := buildUserPrompt(ctx)
+
+		// 验证止损价格在prompt中显示
+		if !strings.Contains(prompt, "止损") || !strings.Contains(prompt, "94571") {
+			t.Errorf("Prompt应该显示止损价格 94571.00, 实际输出:\n%s", prompt)
+		}
+
+		// 验证止盈价格在prompt中显示
+		if !strings.Contains(prompt, "止盈") || !strings.Contains(prompt, "93000") {
+			t.Errorf("Prompt应该显示止盈价格 93000.00, 实际输出:\n%s", prompt)
+		}
+	})
+
+	t.Run("持仓没有止损和止盈时不应该显示", func(t *testing.T) {
+		ctx := &Context{
+			CurrentTime:    "2025-01-17 12:00:00",
+			RuntimeMinutes: 30,
+			CallCount:      5,
+			Account: AccountInfo{
+				TotalEquity:      10000.0,
+				AvailableBalance: 5000.0,
+				MarginUsed:       3000.0,
+				MarginUsedPct:    30.0,
+				PositionCount:    1,
+			},
+			Positions: []PositionInfo{
+				{
+					Symbol:           "BTCUSDT",
+					Side:             "long",
+					EntryPrice:       95000.0,
+					MarkPrice:        95500.0,
+					Quantity:         0.1,
+					Leverage:         5,
+					UnrealizedPnL:    50.0,
+					UnrealizedPnLPct: 0.52,
+					LiquidationPrice: 80000.0,
+					MarginUsed:       1900.0,
+					UpdateTime:       1700000000000,
+					// 没有设置 StopLoss 和 TakeProfit (默认为0)
+				},
+			},
+			CandidateCoins: []CandidateCoin{},
+			MarketDataMap:  make(map[string]*market.Data),
+		}
+
+		prompt := buildUserPrompt(ctx)
+
+		// 当没有设置止损/止盈时，prompt不应该显示0值
+		// (或者应该显示"未设置"等提示)
+		// 这里我们验证至少不会显示误导性的"止损 0.00"
+		if strings.Contains(prompt, "止损 0.00") || strings.Contains(prompt, "止盈 0.00") {
+			t.Errorf("Prompt不应该显示零值的止损/止盈, 实际输出:\n%s", prompt)
+		}
+	})
 }

@@ -1058,6 +1058,11 @@ func (at *AutoTrader) executeUpdateStopLossWithRecord(decision *decision.Decisio
 	}
 
 	log.Printf("  ✓ 止损已调整: %.2f (当前价格: %.2f)", decision.NewStopLoss, marketData.CurrentPrice)
+
+	// 更新内存中的止损价格
+	posKey := decision.Symbol + "_" + strings.ToLower(positionSide)
+	at.positionStopLoss[posKey] = decision.NewStopLoss
+
 	return nil
 }
 
@@ -1143,6 +1148,11 @@ func (at *AutoTrader) executeUpdateTakeProfitWithRecord(decision *decision.Decis
 	}
 
 	log.Printf("  ✓ 止盈已调整: %.2f (当前价格: %.2f)", decision.NewTakeProfit, marketData.CurrentPrice)
+
+	// 更新内存中的止盈价格
+	posKey := decision.Symbol + "_" + strings.ToLower(positionSide)
+	at.positionTakeProfit[posKey] = decision.NewTakeProfit
+
 	return nil
 }
 

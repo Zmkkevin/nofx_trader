@@ -1389,3 +1389,101 @@ func (s *AutoTraderTestSuite) TestGetPositions_MarginCalculationRegression() {
 		}
 	})
 }
+
+// TestUpdateStopLossShouldUpdateMemory 测试 update_stop_loss 应该更新内存中的止损价格
+func (s *AutoTraderTestSuite) TestUpdateStopLossShouldUpdateMemory() {
+	s.Run("执行update_stop_loss后应该更新positionStopLoss map", func() {
+		// 准备：模拟已有持仓
+		symbol := "BTCUSDT"
+		posKey := "BTCUSDT_short"
+
+		// 初始化止损价格为旧值
+		s.autoTrader.positionStopLoss[posKey] = 95000.0
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "short",
+				"positionAmt": -0.1,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 94500.0,
+			}, nil
+		})
+
+		// 执行 update_stop_loss
+		newStopLoss := 94571.0
+		decision := &decision.Decision{
+			Symbol:      symbol,
+			Action:      "update_stop_loss",
+			NewStopLoss: newStopLoss,
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateStopLossWithRecord(decision, actionRecord)
+
+		// 验证
+		s.NoError(err, "update_stop_loss应该成功")
+
+		// 🎯 关键验证：内存中的止损价格应该已更新
+		actualStopLoss := s.autoTrader.positionStopLoss[posKey]
+		s.Equal(newStopLoss, actualStopLoss,
+			"executeUpdateStopLoss后，positionStopLoss[%s]应该更新为%.2f，但实际是%.2f",
+			posKey, newStopLoss, actualStopLoss)
+	})
+}
+
+// TestUpdateTakeProfitShouldUpdateMemory 测试 update_take_profit 应该更新内存中的止盈价格
+func (s *AutoTraderTestSuite) TestUpdateTakeProfitShouldUpdateMemory() {
+	s.Run("执行update_take_profit后应该更新positionTakeProfit map", func() {
+		// 准备：模拟已有持仓
+		symbol := "BTCUSDT"
+		posKey := "BTCUSDT_short"
+
+		// 初始化止盈价格为旧值
+		s.autoTrader.positionTakeProfit[posKey] = 92000.0
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "short",
+				"positionAmt": -0.1,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 94500.0,
+			}, nil
+		})
+
+		// 执行 update_take_profit
+		newTakeProfit := 93000.0
+		decision := &decision.Decision{
+			Symbol:        symbol,
+			Action:        "update_take_profit",
+			NewTakeProfit: newTakeProfit,
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateTakeProfitWithRecord(decision, actionRecord)
+
+		// 验证
+		s.NoError(err, "update_take_profit应该成功")
+
+		// 🎯 关键验证：内存中的止盈价格应该已更新
+		actualTakeProfit := s.autoTrader.positionTakeProfit[posKey]
+		s.Equal(newTakeProfit, actualTakeProfit,
+			"executeUpdateTakeProfit后，positionTakeProfit[%s]应该更新为%.2f，但实际是%.2f",
+			posKey, newTakeProfit, actualTakeProfit)
+	})
+}

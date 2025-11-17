@@ -415,10 +415,20 @@ func buildUserPrompt(ctx *Context) string {
 			// 计算仓位价值（用于 partial_close 检查）
 			positionValue := math.Abs(pos.Quantity) * pos.MarkPrice
 
-			sb.WriteString(fmt.Sprintf("%d. %s %s | 入场价%.4f 当前价%.4f | 数量%.4f | 仓位价值%.2f USDT | 盈亏%+.2f%% | 盈亏金额%+.2f USDT | 最高收益率%.2f%% | 杠杆%dx | 保证金%.0f | 强平价%.4f%s\n\n",
+			// 构建止损/止盈信息
+			stopLossTakeProfitInfo := ""
+			if pos.StopLoss > 0 && pos.TakeProfit > 0 {
+				stopLossTakeProfitInfo = fmt.Sprintf(" | 止损%.4f | 止盈%.4f", pos.StopLoss, pos.TakeProfit)
+			} else if pos.StopLoss > 0 {
+				stopLossTakeProfitInfo = fmt.Sprintf(" | 止损%.4f", pos.StopLoss)
+			} else if pos.TakeProfit > 0 {
+				stopLossTakeProfitInfo = fmt.Sprintf(" | 止盈%.4f", pos.TakeProfit)
+			}
+
+			sb.WriteString(fmt.Sprintf("%d. %s %s | 入场价%.4f 当前价%.4f | 数量%.4f | 仓位价值%.2f USDT | 盈亏%+.2f%% | 盈亏金额%+.2f USDT | 最高收益率%.2f%% | 杠杆%dx | 保证金%.0f | 强平价%.4f%s%s\n\n",
 				i+1, pos.Symbol, strings.ToUpper(pos.Side),
 				pos.EntryPrice, pos.MarkPrice, pos.Quantity, positionValue, pos.UnrealizedPnLPct, pos.UnrealizedPnL, pos.PeakPnLPct,
-				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
+				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration, stopLossTakeProfitInfo))
 
 			// 使用FormatMarketData输出完整市场数据
 			if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
