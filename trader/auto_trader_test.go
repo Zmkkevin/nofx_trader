@@ -979,13 +979,17 @@ func (m *MockDatabase) UpdateTraderInitialBalance(userID, traderID string, newBa
 
 // MockTrader 增强版（添加错误控制）
 type MockTrader struct {
-	balance              map[string]interface{}
-	positions            []map[string]interface{}
-	shouldFailBalance    bool
-	shouldFailPositions  bool
-	shouldFailOpenLong   bool
-	shouldFailCloseLong  bool
-	shouldFailCloseShort bool
+	balance                   map[string]interface{}
+	positions                 []map[string]interface{}
+	shouldFailBalance         bool
+	shouldFailPositions       bool
+	shouldFailOpenLong        bool
+	shouldFailCloseLong       bool
+	shouldFailCloseShort      bool
+	cancelStopLossCallCount   int
+	setStopLossCallCount      int
+	cancelTakeProfitCallCount int
+	setTakeProfitCallCount    int
 }
 
 func (m *MockTrader) GetBalance() (map[string]interface{}, error) {
@@ -1062,18 +1066,22 @@ func (m *MockTrader) GetMarketPrice(symbol string) (float64, error) {
 }
 
 func (m *MockTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
+	m.setStopLossCallCount++
 	return nil
 }
 
 func (m *MockTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
+	m.setTakeProfitCallCount++
 	return nil
 }
 
 func (m *MockTrader) CancelStopLossOrders(symbol string) error {
+	m.cancelStopLossCallCount++
 	return nil
 }
 
 func (m *MockTrader) CancelTakeProfitOrders(symbol string) error {
+	m.cancelTakeProfitCallCount++
 	return nil
 }
 
@@ -1485,5 +1493,143 @@ func (s *AutoTraderTestSuite) TestUpdateTakeProfitShouldUpdateMemory() {
 		s.Equal(newTakeProfit, actualTakeProfit,
 			"executeUpdateTakeProfit后，positionTakeProfit[%s]应该更新为%.2f，但实际是%.2f",
 			posKey, newTakeProfit, actualTakeProfit)
+	})
+}
+
+// TestUpdateStopLossSkipDuplicate 测试重复的止损更新应该被跳过
+func (s *AutoTraderTestSuite) TestUpdateStopLossSkipDuplicate() {
+	s.Run("新止损价格与当前止损相同时应该跳过操作", func() {
+		symbol := "BTCUSDT"
+		posKey := "BTCUSDT_short"
+		currentStopLoss := 95003.0
+
+		// 初始化：当前止损价格为 95003.0
+		s.autoTrader.positionStopLoss[posKey] = currentStopLoss
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "short",
+				"positionAmt": -0.1,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 93626.0,
+			}, nil
+		})
+
+		// 执行 update_stop_loss，设置相同的止损价格 95003.0
+		decision := &decision.Decision{
+			Symbol:      symbol,
+			Action:      "update_stop_loss",
+			NewStopLoss: 95003.0, // 与当前止损相同
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateStopLossWithRecord(decision, actionRecord)
+
+		// 验证：应该成功返回（没有错误）
+		s.NoError(err, "重复的止损更新应该直接返回成功")
+
+		// 验证：CancelStopLossOrders 不应该被调用
+		s.Equal(0, s.mockTrader.cancelStopLossCallCount,
+			"重复止损更新时不应该调用CancelStopLossOrders")
+
+		// 验证：SetStopLoss 不应该被调用
+		s.Equal(0, s.mockTrader.setStopLossCallCount,
+			"重复止损更新时不应该调用SetStopLoss")
+	})
+
+	s.Run("新止损价格与当前止损差异小于0.01时应该跳过", func() {
+		symbol := "ETHUSDT"
+		posKey := "ETHUSDT_long"
+		currentStopLoss := 3000.00
+
+		// 初始化：当前止损价格为 3000.00
+		s.autoTrader.positionStopLoss[posKey] = currentStopLoss
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "long",
+				"positionAmt": 1.0,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 3100.0,
+			}, nil
+		})
+
+		// 执行 update_stop_loss，设置 3000.005（差异 < 0.01）
+		decision := &decision.Decision{
+			Symbol:      symbol,
+			Action:      "update_stop_loss",
+			NewStopLoss: 3000.005,
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateStopLossWithRecord(decision, actionRecord)
+
+		// 验证：应该跳过操作
+		s.NoError(err)
+		s.Equal(0, s.mockTrader.setStopLossCallCount, "差异<0.01时不应该调用SetStopLoss")
+	})
+}
+
+// TestUpdateTakeProfitSkipDuplicate 测试重复的止盈更新应该被跳过
+func (s *AutoTraderTestSuite) TestUpdateTakeProfitSkipDuplicate() {
+	s.Run("新止盈价格与当前止盈相同时应该跳过操作", func() {
+		symbol := "BTCUSDT"
+		posKey := "BTCUSDT_long"
+		currentTakeProfit := 100000.0
+
+		// 初始化：当前止盈价格为 100000.0
+		s.autoTrader.positionTakeProfit[posKey] = currentTakeProfit
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "long",
+				"positionAmt": 0.1,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 95000.0,
+			}, nil
+		})
+
+		// 执行 update_take_profit，设置相同的止盈价格
+		decision := &decision.Decision{
+			Symbol:        symbol,
+			Action:        "update_take_profit",
+			NewTakeProfit: 100000.0, // 与当前止盈相同
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateTakeProfitWithRecord(decision, actionRecord)
+
+		// 验证：应该成功返回
+		s.NoError(err, "重复的止盈更新应该直接返回成功")
+
+		// 验证：不应该调用交易所API
+		s.Equal(0, s.mockTrader.cancelTakeProfitCallCount,
+			"重复止盈更新时不应该调用CancelTakeProfitOrders")
+		s.Equal(0, s.mockTrader.setTakeProfitCallCount,
+			"重复止盈更新时不应该调用SetTakeProfit")
 	})
 }

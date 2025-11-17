@@ -72,15 +72,31 @@ export default function AILearning({ traderId }: AILearningProps) {
     return saved ? parseInt(saved, 10) : 20
   })
 
+  // PromptHash 过滤开关（从 localStorage 读取，默认 true 只显示当前提示词版本）
+  const [filterByPrompt, setFilterByPrompt] = useState<boolean>(() => {
+    const saved = localStorage.getItem('filterByPrompt')
+    // 如果没有保存过，默认为 true（过滤）
+    if (saved === null) return true
+    return saved === 'true'
+  })
+
   // 当 limit 变化时保存到 localStorage
   const handleTradeHistoryLimitChange = (newLimit: number) => {
     setTradeHistoryLimit(newLimit)
     localStorage.setItem('tradeHistoryLimit', newLimit.toString())
   }
 
+  // 当过滤开关变化时保存到 localStorage
+  const handleFilterByPromptChange = (enabled: boolean) => {
+    setFilterByPrompt(enabled)
+    localStorage.setItem('filterByPrompt', enabled.toString())
+  }
+
   const { data: performance, error } = useSWR<PerformanceAnalysis>(
-    traderId ? `performance-${traderId}-${tradeHistoryLimit}` : `performance-${tradeHistoryLimit}`,
-    () => api.getPerformance(traderId, tradeHistoryLimit),
+    traderId
+      ? `performance-${traderId}-${tradeHistoryLimit}-${filterByPrompt}`
+      : `performance-${tradeHistoryLimit}-${filterByPrompt}`,
+    () => api.getPerformance(traderId, tradeHistoryLimit, filterByPrompt),
     {
       refreshInterval: 30000, // 30秒刷新（AI学习分析数据更新频率较低）
       revalidateOnFocus: false,
@@ -155,32 +171,58 @@ export default function AILearning({ traderId }: AILearningProps) {
             filter: 'blur(60px)',
           }}
         />
-        <div className="relative flex items-center gap-4">
-          <div
-            className="w-16 h-16 rounded-2xl flex items-center justify-center"
-            style={{
-              background: 'linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%)',
-              boxShadow: '0 8px 24px rgba(139, 92, 246, 0.5)',
-              border: '2px solid rgba(255, 255, 255, 0.1)',
-            }}
-          >
-            <Brain className="w-8 h-8" style={{ color: '#FFF' }} />
-          </div>
-          <div>
-            <h2
-              className="text-3xl font-bold mb-1"
+        <div className="relative flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div
+              className="w-16 h-16 rounded-2xl flex items-center justify-center"
               style={{
-                color: '#EAECEF',
-                textShadow: '0 2px 8px rgba(139, 92, 246, 0.3)',
+                background: 'linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%)',
+                boxShadow: '0 8px 24px rgba(139, 92, 246, 0.5)',
+                border: '2px solid rgba(255, 255, 255, 0.1)',
               }}
             >
-              {t('aiLearning', language)}
-            </h2>
-            <p className="text-base" style={{ color: '#A78BFA' }}>
-              {t('tradesAnalyzed', language, {
-                count: performance.total_trades,
-              })}
-            </p>
+              <Brain className="w-8 h-8" style={{ color: '#FFF' }} />
+            </div>
+            <div>
+              <h2
+                className="text-3xl font-bold mb-1"
+                style={{
+                  color: '#EAECEF',
+                  textShadow: '0 2px 8px rgba(139, 92, 246, 0.3)',
+                }}
+              >
+                {t('aiLearning', language)}
+              </h2>
+              <p className="text-base" style={{ color: '#A78BFA' }}>
+                {t('tradesAnalyzed', language, {
+                  count: performance.total_trades,
+                })}
+              </p>
+            </div>
+          </div>
+
+          {/* 右侧控制区 */}
+          <div className="flex items-center gap-4">
+            {/* PromptHash 过滤开关 */}
+            <div className="flex items-center gap-2">
+              <label className="text-xs" style={{ color: '#848E9C' }}>
+                {language === 'zh' ? '仅当前提示词版本' : 'Current prompt version only'}
+              </label>
+              <button
+                onClick={() => handleFilterByPromptChange(!filterByPrompt)}
+                className="relative w-11 h-6 rounded-full transition-colors"
+                style={{
+                  background: filterByPrompt ? '#8B5CF6' : '#2B3139',
+                }}
+              >
+                <div
+                  className="absolute top-1 w-4 h-4 rounded-full bg-white transition-transform"
+                  style={{
+                    transform: filterByPrompt ? 'translateX(22px)' : 'translateX(4px)',
+                  }}
+                />
+              </button>
+            </div>
           </div>
         </div>
       </div>

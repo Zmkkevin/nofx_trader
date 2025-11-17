@@ -973,7 +973,7 @@ func TestGetPerformanceWithCache(t *testing.T) {
 	}
 
 	// 测试 1: 首次调用应该触发大窗口扫描
-	performance1, err := logger.GetPerformanceWithCache(20)
+	performance1, err := logger.GetPerformanceWithCache(20, false)
 	if err != nil {
 		t.Fatalf("GetPerformanceWithCache failed: %v", err)
 	}
@@ -991,7 +991,7 @@ func TestGetPerformanceWithCache(t *testing.T) {
 	}
 
 	// 测试 2: 第二次调用应该使用缓存（不重新扫描）
-	performance2, err := logger.GetPerformanceWithCache(10)
+	performance2, err := logger.GetPerformanceWithCache(10, false)
 	if err != nil {
 		t.Fatalf("Second GetPerformanceWithCache failed: %v", err)
 	}
@@ -1115,7 +1115,7 @@ func TestPerformanceDataConsistency(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// 🔬 测试: 获取性能分析 (请求所有交易)
-	performance, err := logger.GetPerformanceWithCache(100)
+	performance, err := logger.GetPerformanceWithCache(100, false)
 	if err != nil {
 		t.Fatalf("GetPerformanceWithCache failed: %v", err)
 	}
@@ -1725,7 +1725,7 @@ func TestGetPerformanceFilteredByPromptHash(t *testing.T) {
 	}
 
 	// === 验证：GetPerformanceWithCache 应该只返回 prompt2 的统计 ===
-	performance, err := logger.GetPerformanceWithCache(100)
+	performance, err := logger.GetPerformanceWithCache(100, false)
 	if err != nil {
 		t.Fatalf("❌ GetPerformanceWithCache failed: %v", err)
 	}
@@ -1854,7 +1854,7 @@ func TestSharpeRatioFromFilteredTrades(t *testing.T) {
 	}
 
 	// === 获取 performance（应该基于 prompt2） ===
-	performance, err := logger.GetPerformanceWithCache(100)
+	performance, err := logger.GetPerformanceWithCache(100, false)
 	if err != nil {
 		t.Fatalf("❌ GetPerformanceWithCache failed: %v", err)
 	}

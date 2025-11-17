@@ -687,7 +687,8 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 	// 5. 分析历史表现（使用缓存机制，避免每次扫描文件）
 	// 🚀 使用统一的缓存懒加载逻辑（首次扫描1000周期，后续使用缓存）
 	// AI 只需要最近 20 笔交易作为参考
-	performance, err := at.decisionLogger.GetPerformanceWithCache(20)
+	// filterByPrompt=false: AI 训练时使用所有历史交易数据（不按 PromptHash 过滤）
+	performance, err := at.decisionLogger.GetPerformanceWithCache(20, false)
 	if err != nil {
 		log.Printf("⚠️  分析历史表现失败: %v", err)
 		// 不影响主流程，继续执行（但设置performance为nil以避免传递错误数据）
@@ -1044,6 +1045,14 @@ func (at *AutoTrader) executeUpdateStopLossWithRecord(decision *decision.Decisio
 		log.Printf("  🚨 建议：手动平掉其中一个方向的持仓，或检查系统是否有BUG")
 	}
 
+	// 检查是否与当前止损相同，避免重复操作
+	posKey := decision.Symbol + "_" + strings.ToLower(positionSide)
+	currentStopLoss := at.positionStopLoss[posKey]
+	if math.Abs(currentStopLoss-decision.NewStopLoss) < 0.01 {
+		log.Printf("  ℹ️  新止损价格(%.2f)与当前止损(%.2f)相同，跳过操作", decision.NewStopLoss, currentStopLoss)
+		return nil
+	}
+
 	// 取消旧的止损单（只删除止损单，不影响止盈单）
 	// 注意：如果存在双向持仓，这会删除两个方向的止损单
 	if err := at.trader.CancelStopLossOrders(decision.Symbol); err != nil {
@@ -1061,7 +1070,6 @@ func (at *AutoTrader) executeUpdateStopLossWithRecord(decision *decision.Decisio
 	log.Printf("  ✓ 止损已调整: %.2f (当前价格: %.2f)", decision.NewStopLoss, marketData.CurrentPrice)
 
 	// 更新内存中的止损价格
-	posKey := decision.Symbol + "_" + strings.ToLower(positionSide)
 	at.positionStopLoss[posKey] = decision.NewStopLoss
 
 	return nil
@@ -1134,6 +1142,14 @@ func (at *AutoTrader) executeUpdateTakeProfitWithRecord(decision *decision.Decis
 		log.Printf("  🚨 建议：手动平掉其中一个方向的持仓，或检查系统是否有BUG")
 	}
 
+	// 检查是否与当前止盈相同，避免重复操作
+	posKey := decision.Symbol + "_" + strings.ToLower(positionSide)
+	currentTakeProfit := at.positionTakeProfit[posKey]
+	if math.Abs(currentTakeProfit-decision.NewTakeProfit) < 0.01 {
+		log.Printf("  ℹ️  新止盈价格(%.2f)与当前止盈(%.2f)相同，跳过操作", decision.NewTakeProfit, currentTakeProfit)
+		return nil
+	}
+
 	// 取消旧的止盈单（只删除止盈单，不影响止损单）
 	// 注意：如果存在双向持仓，这会删除两个方向的止盈单
 	if err := at.trader.CancelTakeProfitOrders(decision.Symbol); err != nil {
@@ -1151,7 +1167,6 @@ func (at *AutoTrader) executeUpdateTakeProfitWithRecord(decision *decision.Decis
 	log.Printf("  ✓ 止盈已调整: %.2f (当前价格: %.2f)", decision.NewTakeProfit, marketData.CurrentPrice)
 
 	// 更新内存中的止盈价格
-	posKey := decision.Symbol + "_" + strings.ToLower(positionSide)
 	at.positionTakeProfit[posKey] = decision.NewTakeProfit
 
 	return nil

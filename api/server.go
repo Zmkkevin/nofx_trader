@@ -1586,8 +1586,16 @@ func (s *Server) handlePerformance(c *gin.Context) {
 		}
 	}
 
+	// 从 query 参数读取是否按 PromptHash 过滤，默认 true（只显示当前提示词版本）
+	filterByPrompt := true
+	if filterStr := c.Query("filter_by_prompt"); filterStr == "false" {
+		filterByPrompt = false
+	} else if filterStr == "true" {
+		filterByPrompt = true
+	}
+
 	// 🚀 使用统一的缓存懒加载逻辑
-	performance, err := trader.GetDecisionLogger().GetPerformanceWithCache(tradeLimit)
+	performance, err := trader.GetDecisionLogger().GetPerformanceWithCache(tradeLimit, filterByPrompt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("获取历史表现失败: %v", err),

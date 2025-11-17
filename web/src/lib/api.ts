@@ -286,14 +286,22 @@ export const api = {
     return result.data!
   },
 
-  // 获取AI学习表现分析（支持trader_id和limit参数）
-  async getPerformance(traderId?: string, limit?: number): Promise<any> {
+  // 获取AI学习表现分析（支持trader_id、limit和filter_by_prompt参数）
+  async getPerformance(
+    traderId?: string,
+    limit?: number,
+    filterByPrompt?: boolean
+  ): Promise<any> {
     const params = new URLSearchParams()
     if (traderId) {
       params.append('trader_id', traderId)
     }
     if (limit !== undefined && limit > 0) {
       params.append('limit', limit.toString())
+    }
+    // 显式传递 filter_by_prompt 参数（true 或 false）
+    if (filterByPrompt !== undefined) {
+      params.append('filter_by_prompt', filterByPrompt.toString())
     }
 
     const url = params.toString()

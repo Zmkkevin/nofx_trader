@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -106,7 +107,8 @@ type IDecisionLogger interface {
 	GetRecentTrades(limit int) []TradeOutcome
 	// GetPerformanceWithCache 使用缓存机制获取历史表现分析（懒加载）
 	// tradeLimit: 返回的交易记录数量限制
-	GetPerformanceWithCache(tradeLimit int) (*PerformanceAnalysis, error)
+	// filterByPrompt: 是否按当前 PromptHash 过滤交易（默认 false 显示所有）
+	GetPerformanceWithCache(tradeLimit int, filterByPrompt bool) (*PerformanceAnalysis, error)
 }
 
 // OpenPosition 记录开仓信息（用于主动维护缓存）
@@ -215,10 +217,15 @@ func (l *DecisionLogger) GetLatestRecords(n int) ([]*DecisionRecord, error) {
 		return nil, fmt.Errorf("读取日志目录失败: %w", err)
 	}
 
-	// 先按修改时间倒序收集（最新的在前）
+	// 按修改时间排序（最新的在前）
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].ModTime().After(files[j].ModTime())
+	})
+
+	// 按修改时间倒序收集（最新的在前）
 	var records []*DecisionRecord
 	count := 0
-	for i := len(files) - 1; i >= 0 && count < n; i-- {
+	for i := 0; i < len(files) && count < n; i++ {
 		file := files[i]
 		if file.IsDir() {
 			continue
@@ -1280,25 +1287,34 @@ func (l *DecisionLogger) calculateSharpeRatioFromEquity() float64 {
 // 1. 统计分析：固定基于最近 100 笔交易（AIAnalysisSampleSize）
 // 2. 列表显示：tradeLimit 仅控制返回给前端的交易记录数量
 // 3. 数据稳定性：统计指标（胜率、夏普比率等）不受 tradeLimit 影响
+// 4. PromptHash 过滤：可选，默认显示所有交易（filterByPrompt=false）
 //
 // 参数:
 //   tradeLimit: 返回给前端的交易列表长度（用户显示偏好，如 10/20/50/100）
+//   filterByPrompt: 是否按当前 PromptHash 过滤交易（默认 false 显示所有）
 //
 // 返回:
 //   - total_trades: 分析的交易总数（固定基于 AIAnalysisSampleSize 或缓存全部）
 //   - recent_trades: 交易列表（长度 = min(tradeLimit, 实际交易数)）
-func (l *DecisionLogger) GetPerformanceWithCache(tradeLimit int) (*PerformanceAnalysis, error) {
+func (l *DecisionLogger) GetPerformanceWithCache(tradeLimit int, filterByPrompt bool) (*PerformanceAnalysis, error) {
 	// 获取用于 AI 分析的固定样本（最近 100 笔交易）
 	cachedTrades := l.GetRecentTrades(AIAnalysisSampleSize)
 
-	// 🔍 获取当前的 PromptHash（从最新交易推断）
-	var currentPromptHash string
-	if len(cachedTrades) > 0 {
-		currentPromptHash = cachedTrades[0].PromptHash
-	}
+	var filteredTrades []TradeOutcome
 
-	// 🎯 过滤：只保留匹配当前 PromptHash 的交易
-	filteredTrades := filterByPromptHash(cachedTrades, currentPromptHash)
+	// 🎯 根据用户选择决定是否按 PromptHash 过滤
+	if filterByPrompt {
+		// 🔍 获取当前的 PromptHash（从最新交易推断）
+		var currentPromptHash string
+		if len(cachedTrades) > 0 {
+			currentPromptHash = cachedTrades[0].PromptHash
+		}
+		// 过滤：只保留匹配当前 PromptHash 的交易
+		filteredTrades = filterByPromptHash(cachedTrades, currentPromptHash)
+	} else {
+		// 不过滤，显示所有交易
+		filteredTrades = cachedTrades
+	}
 
 	var performance *PerformanceAnalysis
 	var err error
@@ -1310,12 +1326,17 @@ func (l *DecisionLogger) GetPerformanceWithCache(tradeLimit int) (*PerformanceAn
 		if err != nil {
 			return nil, fmt.Errorf("初始化缓存失败: %w", err)
 		}
-		// 重新获取分析样本并过滤
+		// 重新获取分析样本并根据设置过滤
 		cachedTrades = l.GetRecentTrades(AIAnalysisSampleSize)
-		if len(cachedTrades) > 0 {
-			currentPromptHash = cachedTrades[0].PromptHash
+		if filterByPrompt {
+			var currentPromptHash string
+			if len(cachedTrades) > 0 {
+				currentPromptHash = cachedTrades[0].PromptHash
+			}
+			filteredTrades = filterByPromptHash(cachedTrades, currentPromptHash)
+		} else {
+			filteredTrades = cachedTrades
 		}
-		filteredTrades = filterByPromptHash(cachedTrades, currentPromptHash)
 	} else {
 		// ✅ 缓存已有数据：基于过滤后的交易计算统计信息
 		performance = l.calculateStatisticsFromTrades(filteredTrades)
