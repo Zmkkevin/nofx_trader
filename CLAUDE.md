@@ -54,6 +54,52 @@
 2. 等待用户明确同意
 3. 得到同意后再执行操作
 
+## Git 工作流规则 - MANDATORY
+
+**本项目使用 feature branch 工作流，所有 PR 必须提交到 `next` 分支：**
+
+### PR 提交规则
+1. **创建 feature 分支**：从 `next` 分支创建 feature 分支
+   ```bash
+   git checkout next
+   git checkout -b feature/your-feature-name
+   # 或 fix/issue-number-description
+   ```
+
+2. **提交 PR 到 next**：
+   - ✅ **正确**：`feature/xxx` → `next`
+   - ❌ **错误**：`feature/xxx` → `main`
+   - ❌ **错误**：`next` → `main`
+
+3. **分支命名规范**：
+   - 新功能：`feature/description` 或 `feat/description`
+   - Bug 修复：`fix/issue-number-description`
+   - 重构：`refactor/description`
+   - 文档：`docs/description`
+
+4. **Commit Message 规范**：
+   - 使用 Conventional Commits 格式
+   - 格式：`<type>(<scope>): <description>`
+   - 例如：`fix(logger): recover cache on restart`
+   - 关联 Issue：在 commit message 中添加 `Fixes #123` 或 `Closes #123`
+
+5. **PR 描述要求**：
+   - 必须包含问题描述（Problem）
+   - 必须包含解决方案（Solution）
+   - 必须包含修改清单（Changes）
+   - 必须包含测试说明（Testing）
+   - 必须关联相关 Issue（Closes #xxx）
+
+### 分支管理
+- **main**: 生产环境分支，只接受从 `next` 合并的稳定版本
+- **next**: 开发分支，所有 feature/fix PR 都提交到这里
+- **feature/fix 分支**: 从 `next` 创建，完成后提交 PR 到 `next`
+
+### 重要提醒
+⚠️ **永远不要直接提交 PR 到 `main` 分支！**
+- 除非用户明确要求，否则所有 PR 都应该提交到 `next`
+- `main` 分支只接受经过测试和验证的稳定版本
+
 ## 决策规则
 
 - **直接推荐最佳方案**，不要抛出选择题让用户做决策
