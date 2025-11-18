@@ -1097,6 +1097,10 @@ func (m *MockTrader) FormatQuantity(symbol string, quantity float64) (string, er
 	return fmt.Sprintf("%.4f", quantity), nil
 }
 
+func (m *MockTrader) GetRecentFills(symbol string, startTime int64, endTime int64) ([]map[string]interface{}, error) {
+	return []map[string]interface{}{}, nil
+}
+
 // ============================================================
 // 测试套件入口
 // ============================================================

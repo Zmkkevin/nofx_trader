@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/sonirico/go-hyperliquid"
@@ -903,4 +904,85 @@ func absFloat(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+// GetRecentFills 获取最近的成交记录
+func (t *HyperliquidTrader) GetRecentFills(symbol string, startTime int64, endTime int64) ([]map[string]interface{}, error) {
+	// endTime = 0 表示当前时间
+	if endTime == 0 {
+		endTime = time.Now().UnixMilli()
+	}
+
+	// 调用 Hyperliquid SDK 获取成交记录
+	fills, err := t.exchange.Info().UserFillsByTime(t.ctx, t.walletAddr, startTime, &endTime)
+	if err != nil {
+		return nil, fmt.Errorf("获取成交记录失败: %w", err)
+	}
+
+	// 转换为统一格式
+	var result []map[string]interface{}
+	coin := convertSymbolToHyperliquid(symbol)
+
+	for _, fill := range fills {
+		// 过滤指定交易对
+		if fill.Coin != coin {
+			continue
+		}
+
+		// 解析价格和数量（Hyperliquid 返回的是字符串）
+		price, err := strconv.ParseFloat(fill.Price, 64)
+		if err != nil {
+			log.Printf("⚠️ 解析成交价格失败: %v", err)
+			continue
+		}
+
+		quantity, err := strconv.ParseFloat(fill.Size, 64)
+		if err != nil {
+			log.Printf("⚠️ 解析成交数量失败: %v", err)
+			continue
+		}
+
+		// 解析手续费（可选）
+		fee := 0.0
+		if fill.Fee != "" {
+			fee, _ = strconv.ParseFloat(fill.Fee, 64)
+		}
+
+		// 转换方向：Hyperliquid 的 Dir 字段
+		// "Open Long" / "Close Long" / "Open Short" / "Close Short"
+		// 需要转换为统一的 "Buy" / "Sell"
+		side := convertHyperliquidDirToSide(fill.Dir)
+
+		result = append(result, map[string]interface{}{
+			"symbol":    symbol,
+			"side":      side,
+			"price":     price,
+			"quantity":  quantity,
+			"timestamp": fill.Time,
+			"fee":       fee,
+		})
+	}
+
+	return result, nil
+}
+
+// convertHyperliquidDirToSide 转换 Hyperliquid 的方向字段为统一格式
+func convertHyperliquidDirToSide(dir string) string {
+	// Hyperliquid Dir 可能的值:
+	// - "Open Long" -> Buy
+	// - "Close Short" -> Buy
+	// - "Open Short" -> Sell
+	// - "Close Long" -> Sell
+	if strings.Contains(dir, "Long") {
+		if strings.Contains(dir, "Open") {
+			return "Buy"
+		}
+		return "Sell" // Close Long
+	} else if strings.Contains(dir, "Short") {
+		if strings.Contains(dir, "Open") {
+			return "Sell"
+		}
+		return "Buy" // Close Short
+	}
+	return "Unknown"
 }

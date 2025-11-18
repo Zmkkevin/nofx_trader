@@ -16,6 +16,7 @@ func (at *AutoTrader) verifyAndUpdateActualFillPrice(
 	actionRecord *logger.DecisionAction,
 	side string, // "long" or "short"
 	estimatedPrice float64, // 开仓前的预估价格
+	openTime int64, // 开仓时间（毫秒时间戳）
 ) error {
 	const maxRetries = 3
 	const retryDelay = 500 * time.Millisecond
@@ -23,40 +24,71 @@ func (at *AutoTrader) verifyAndUpdateActualFillPrice(
 
 	log.Printf("  🔍 验证实际成交价格和风险...")
 
-	// 重试获取持仓数据（交易所可能需要时间更新）
-	var actualEntryPrice float64
-	var positionFound bool
+	// 定义查询时间范围：开仓前后各 10 秒
+	startTime := openTime - 10000
+	endTime := openTime + 10000
 
+	var fills []map[string]interface{}
+	var err error
+
+	// 重试机制：交易所可能需要时间同步成交记录
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
+			log.Printf("  ⏳ 等待 %v 后重试获取成交记录 (尝试 %d/%d)...", retryDelay, i+1, maxRetries)
 			time.Sleep(retryDelay)
 		}
 
-		positions, err := at.trader.GetPositions()
+		fills, err = at.trader.GetRecentFills(decision.Symbol, startTime, endTime)
 		if err != nil {
-			log.Printf("  ⚠️ 获取持仓失败 (尝试 %d/%d): %v", i+1, maxRetries, err)
+			log.Printf("  ⚠️ 获取成交记录失败 (尝试 %d/%d): %v", i+1, maxRetries, err)
 			continue
 		}
 
-		for _, pos := range positions {
-			if pos["symbol"] == decision.Symbol && pos["side"] == side {
-				if entryPrice, ok := pos["entryPrice"].(float64); ok && entryPrice > 0 {
-					actualEntryPrice = entryPrice
-					positionFound = true
-					break
-				}
-			}
-		}
-
-		if positionFound {
+		// 如果找到成交记录，停止重试
+		if len(fills) > 0 {
 			break
 		}
 	}
 
-	if !positionFound {
+	if err != nil || len(fills) == 0 {
 		log.Printf("  ⚠️ 未能获取实际成交价，使用预估价格 %.2f", estimatedPrice)
 		return nil // 不阻断流程，继续执行
 	}
+
+	// 过滤匹配的成交记录
+	// open_long -> Buy
+	// open_short -> Sell
+	expectedSide := "Buy"
+	if side == "short" {
+		expectedSide = "Sell"
+	}
+
+	var matchedFills []map[string]interface{}
+	for _, fill := range fills {
+		fillSide, _ := fill["side"].(string)
+		if fillSide == expectedSide {
+			matchedFills = append(matchedFills, fill)
+		}
+	}
+
+	if len(matchedFills) == 0 {
+		log.Printf("  ⚠️ 未找到匹配的 %s 成交记录，使用预估价格 %.2f", expectedSide, estimatedPrice)
+		return nil
+	}
+
+	// 计算加权平均成交价格
+	var totalValue float64
+	var totalQuantity float64
+
+	for _, fill := range matchedFills {
+		price, _ := fill["price"].(float64)
+		quantity, _ := fill["quantity"].(float64)
+
+		totalValue += price * quantity
+		totalQuantity += quantity
+	}
+
+	actualEntryPrice := totalValue / totalQuantity
 
 	// 更新 actionRecord 为实际成交价
 	actionRecord.Price = actualEntryPrice
@@ -65,8 +97,8 @@ func (at *AutoTrader) verifyAndUpdateActualFillPrice(
 	slippage := actualEntryPrice - estimatedPrice
 	slippagePct := (slippage / estimatedPrice) * 100
 
-	log.Printf("  📊 成交价格: 预估 %.2f → 实际 %.2f (滑点 %+.2f, %+.2f%%)",
-		estimatedPrice, actualEntryPrice, slippage, slippagePct)
+	log.Printf("  📊 成交价格: 预估 %.2f → 实际 %.2f (滑点 %+.2f, %+.2f%%) [共 %d 笔成交]",
+		estimatedPrice, actualEntryPrice, slippage, slippagePct, len(matchedFills))
 
 	// 获取账户净值用于风险计算
 	balance, err := at.trader.GetBalance()
@@ -224,4 +256,98 @@ func calculateMaxStopLoss(
 	}
 
 	return stopLoss
+}
+
+// verifyAndUpdateCloseFillPrice 验证并更新平仓的真实成交价格
+// 在平仓后调用，基于交易所的成交记录获取 100% 准确的成交价格
+func (at *AutoTrader) verifyAndUpdateCloseFillPrice(
+	decision *decision.Decision,
+	actionRecord *logger.DecisionAction,
+	closeTime int64, // 平仓时间（毫秒时间戳）
+) error {
+	const retryDelay = 500 * time.Millisecond
+	const maxRetries = 3
+
+	log.Printf("  🔍 验证平仓真实成交价格...")
+
+	// 定义查询时间范围：平仓前后各 10 秒
+	startTime := closeTime - 10000
+	endTime := closeTime + 10000
+
+	var fills []map[string]interface{}
+	var err error
+
+	// 重试机制：交易所可能需要时间同步成交记录
+	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			log.Printf("  ⏳ 等待 %v 后重试获取成交记录 (尝试 %d/%d)...", retryDelay, i+1, maxRetries)
+			time.Sleep(retryDelay)
+		}
+
+		fills, err = at.trader.GetRecentFills(decision.Symbol, startTime, endTime)
+		if err != nil {
+			log.Printf("  ⚠️ 获取成交记录失败 (尝试 %d/%d): %v", i+1, maxRetries, err)
+			continue
+		}
+
+		// 如果找到成交记录，停止重试
+		if len(fills) > 0 {
+			break
+		}
+	}
+
+	if err != nil {
+		log.Printf("  ⚠️ 无法获取成交记录，保持使用平仓前的市场价格 %.2f", actionRecord.Price)
+		return nil // 不阻断流程
+	}
+
+	if len(fills) == 0 {
+		log.Printf("  ⚠️ 未找到成交记录，保持使用平仓前的市场价格 %.2f", actionRecord.Price)
+		return nil // 不阻断流程
+	}
+
+	// 过滤匹配的成交记录
+	// close_long -> Sell
+	// close_short -> Buy
+	expectedSide := "Sell"
+	if decision.Action == "close_short" {
+		expectedSide = "Buy"
+	}
+
+	var matchedFills []map[string]interface{}
+	for _, fill := range fills {
+		side, _ := fill["side"].(string)
+		if side == expectedSide {
+			matchedFills = append(matchedFills, fill)
+		}
+	}
+
+	if len(matchedFills) == 0 {
+		log.Printf("  ⚠️ 未找到匹配的 %s 成交记录，保持使用平仓前的市场价格 %.2f", expectedSide, actionRecord.Price)
+		return nil
+	}
+
+	// 计算加权平均成交价格
+	var totalValue float64
+	var totalQuantity float64
+
+	for _, fill := range matchedFills {
+		price, _ := fill["price"].(float64)
+		quantity, _ := fill["quantity"].(float64)
+
+		totalValue += price * quantity
+		totalQuantity += quantity
+
+		log.Printf("  📊 成交记录: %.8f @ %.2f", quantity, price)
+	}
+
+	weightedAvgPrice := totalValue / totalQuantity
+
+	// 更新 actionRecord
+	oldPrice := actionRecord.Price
+	actionRecord.Price = weightedAvgPrice
+
+	log.Printf("  ✓ 成交价格已矫正: %.2f -> %.2f (共 %d 笔成交)", oldPrice, weightedAvgPrice, len(matchedFills))
+
+	return nil
 }

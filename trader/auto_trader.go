@@ -392,6 +392,22 @@ func (at *AutoTrader) runCycle() error {
 	closedPositions := at.detectClosedPositions(ctx.Positions)
 	if len(closedPositions) > 0 {
 		autoCloseActions := at.generateAutoCloseActions(closedPositions)
+
+		// ✅ 为每个自动平仓矫正真实成交价格
+		currentTime := time.Now().UnixMilli()
+		for i := range autoCloseActions {
+			action := &autoCloseActions[i]
+			decision := &decision.Decision{
+				Symbol: action.Symbol,
+				Action: action.Action,
+			}
+
+			// 调用平仓价格矫正函数
+			if err := at.verifyAndUpdateCloseFillPrice(decision, action, currentTime); err != nil {
+				log.Printf("  ⚠️ 自动平仓成交价验证失败: %v", err)
+			}
+		}
+
 		record.Decisions = append(record.Decisions, autoCloseActions...)
 		log.Printf("🔔 检测到 %d 个被动平仓", len(closedPositions))
 		for i, closed := range closedPositions {
@@ -418,7 +434,7 @@ func (at *AutoTrader) runCycle() error {
 				closed.Symbol,
 				closed.Side,
 				closed.EntryPrice,
-				action.Price,    // 使用推断的平仓价格
+				action.Price,    // 使用真实成交价格（已矫正）
 				pnlPct,
 				reasonCN)
 		}
@@ -798,6 +814,9 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 		// 继续执行，不影响交易
 	}
 
+	// 记录开仓时间（在开仓前记录）
+	openTime := time.Now().UnixMilli()
+
 	// 开仓
 	order, err := at.trader.OpenLong(decision.Symbol, quantity, decision.Leverage)
 	if err != nil {
@@ -811,9 +830,9 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 
 	log.Printf("  ✓ 开仓成功，订单ID: %v, 数量: %.4f", order["orderId"], quantity)
 
-	// 记录开仓时间
+	// 记录开仓时间到持仓跟踪
 	posKey := decision.Symbol + "_long"
-	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
+	at.positionFirstSeenTime[posKey] = openTime
 
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
@@ -828,7 +847,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	}
 
 	// ✅ 验证实际成交价格和风险（基于实际成交数据）
-	if err := at.verifyAndUpdateActualFillPrice(decision, actionRecord, "long", marketData.CurrentPrice); err != nil {
+	if err := at.verifyAndUpdateActualFillPrice(decision, actionRecord, "long", marketData.CurrentPrice, openTime); err != nil {
 		log.Printf("  ⚠️ 实际成交价验证失败: %v", err)
 		// 不阻断流程，继续执行
 	}
@@ -888,6 +907,9 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 		// 继续执行，不影响交易
 	}
 
+	// 记录开仓时间（在开仓前记录）
+	openTime := time.Now().UnixMilli()
+
 	// 开仓
 	order, err := at.trader.OpenShort(decision.Symbol, quantity, decision.Leverage)
 	if err != nil {
@@ -901,9 +923,9 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 
 	log.Printf("  ✓ 开仓成功，订单ID: %v, 数量: %.4f", order["orderId"], quantity)
 
-	// 记录开仓时间
+	// 记录开仓时间到持仓跟踪
 	posKey := decision.Symbol + "_short"
-	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
+	at.positionFirstSeenTime[posKey] = openTime
 
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
@@ -918,7 +940,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	}
 
 	// ✅ 验证实际成交价格和风险（基于实际成交数据）
-	if err := at.verifyAndUpdateActualFillPrice(decision, actionRecord, "short", marketData.CurrentPrice); err != nil {
+	if err := at.verifyAndUpdateActualFillPrice(decision, actionRecord, "short", marketData.CurrentPrice, openTime); err != nil {
 		log.Printf("  ⚠️ 实际成交价验证失败: %v", err)
 		// 不阻断流程，继续执行
 	}
@@ -937,6 +959,9 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *decision.Decision, ac
 	}
 	actionRecord.Price = marketData.CurrentPrice
 
+	// 记录平仓时间
+	closeTime := time.Now().UnixMilli()
+
 	// 平仓
 	order, err := at.trader.CloseLong(decision.Symbol, 0) // 0 = 全部平仓
 	if err != nil {
@@ -949,6 +974,13 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *decision.Decision, ac
 	}
 
 	log.Printf("  ✓ 平仓成功")
+
+	// ✅ 验证实际成交价格（基于交易所成交记录）
+	if err := at.verifyAndUpdateCloseFillPrice(decision, actionRecord, closeTime); err != nil {
+		log.Printf("  ⚠️ 平仓成交价验证失败: %v", err)
+		// 不阻断流程，继续执行
+	}
+
 	return nil
 }
 
@@ -963,6 +995,9 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *decision.Decision, a
 	}
 	actionRecord.Price = marketData.CurrentPrice
 
+	// 记录平仓时间
+	closeTime := time.Now().UnixMilli()
+
 	// 平仓
 	order, err := at.trader.CloseShort(decision.Symbol, 0) // 0 = 全部平仓
 	if err != nil {
@@ -975,6 +1010,13 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *decision.Decision, a
 	}
 
 	log.Printf("  ✓ 平仓成功")
+
+	// ✅ 验证实际成交价格（基于交易所成交记录）
+	if err := at.verifyAndUpdateCloseFillPrice(decision, actionRecord, closeTime); err != nil {
+		log.Printf("  ⚠️ 平仓成交价验证失败: %v", err)
+		// 不阻断流程，继续执行
+	}
+
 	return nil
 }
 
@@ -1251,6 +1293,9 @@ func (at *AutoTrader) executePartialCloseWithRecord(decision *decision.Decision,
 		}
 	}
 
+	// 记录平仓时间（用于后续验证真实成交价格）
+	closeTime := time.Now().UnixMilli()
+
 	// 执行平仓
 	var order map[string]interface{}
 	if positionSide == "LONG" {
@@ -1270,6 +1315,11 @@ func (at *AutoTrader) executePartialCloseWithRecord(decision *decision.Decision,
 
 	log.Printf("  ✓ 部分平仓成功: 平仓 %.4f (%.1f%%), 剩余 %.4f",
 		closeQuantity, decision.ClosePercentage, remainingQuantity)
+
+	// ✅ 验证实际成交价格（基于交易所成交记录）
+	if err := at.verifyAndUpdateCloseFillPrice(decision, actionRecord, closeTime); err != nil {
+		log.Printf("  ⚠️ 部分平仓成交价验证失败: %v", err)
+	}
 
 	// ✅ Step 4: 恢复止盈止损（防止剩余仓位裸奔）
 	// 重要：币安等交易所在部分平仓后会自动取消原有的 TP/SL 订单（因为数量不匹配）
