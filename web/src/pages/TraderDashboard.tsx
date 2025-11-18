@@ -297,25 +297,25 @@ export default function TraderDashboard() {
           boxShadow: '0 0 30px rgba(240, 185, 11, 0.15)',
         }}
       >
-        <div className="flex items-start justify-between mb-3">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
           <h2
-            className="text-2xl font-bold flex items-center gap-2"
+            className="text-2xl font-bold flex items-center gap-2 min-w-0"
             style={{ color: '#EAECEF' }}
           >
             <span
-              className="w-10 h-10 rounded-full flex items-center justify-center"
+              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center"
               style={{
                 background: 'linear-gradient(135deg, #F0B90B 0%, #FCD535 100%)',
               }}
             >
               <Bot className="w-5 h-5" style={{ color: '#0B0E11' }} />
             </span>
-            {selectedTrader.trader_name}
+            <span className="truncate">{selectedTrader.trader_name}</span>
           </h2>
 
           {/* Trader Selector */}
           {traders && traders.length > 0 && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
               <span className="text-sm" style={{ color: '#848E9C' }}>
                 {t('switchTrader', language)}:
               </span>
@@ -339,10 +339,10 @@ export default function TraderDashboard() {
           )}
         </div>
         <div
-          className="flex items-center gap-4 text-sm"
+          className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm"
           style={{ color: '#848E9C' }}
         >
-          <span>
+          <span className="whitespace-nowrap">
             AI Model:{' '}
             <span
               className="font-semibold"
@@ -358,16 +358,16 @@ export default function TraderDashboard() {
               )}
             </span>
           </span>
-          <span>•</span>
-          <span>
+          <span className="hidden sm:inline">•</span>
+          <span className="whitespace-nowrap">
             Prompt: <span className="font-semibold" style={{ color: highlightColor }}>{selectedTrader.system_prompt_template || '-'}</span>
           </span>
           {status && (
             <>
-              <span>•</span>
-              <span>Cycles: {status.call_count}</span>
-              <span>•</span>
-              <span>Runtime: {status.runtime_minutes} min</span>
+              <span className="hidden sm:inline">•</span>
+              <span className="whitespace-nowrap">Cycles: {status.call_count}</span>
+              <span className="hidden sm:inline">•</span>
+              <span className="whitespace-nowrap">Runtime: {status.runtime_minutes} min</span>
             </>
           )}
         </div>
