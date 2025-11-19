@@ -111,20 +111,24 @@ type AutoTrader struct {
 	lastResetTime         time.Time
 	stopUntil             time.Time
 	isRunning             bool
-	startTime             time.Time        // 系统启动时间
-	callCount             int              // AI调用次数
-	positionFirstSeenTime map[string]int64 // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
-	stopMonitorCh         chan struct{}    // 用于停止监控goroutine
-	monitorWg             sync.WaitGroup   // 用于等待监控goroutine结束
+	startTime             time.Time          // 系统启动时间
+	callCount             int                // AI调用次数
+	positionFirstSeenTime map[string]int64   // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
+	stopMonitorCh         chan struct{}      // 用于停止监控goroutine
+	monitorWg             sync.WaitGroup     // 用于等待监控goroutine结束
 	peakPnLCache          map[string]float64 // 最高收益缓存 (symbol -> 峰值盈亏百分比)
-	peakPnLCacheMutex     sync.RWMutex     // 缓存读写锁
-	lastBalanceSyncTime   time.Time        // 上次余额同步时间
-	database              interface{}      // 数据库引用（用于自动更新余额）
-	userID                string           // 用户ID
+	peakPnLCacheMutex     sync.RWMutex       // 缓存读写锁
+	lastBalanceSyncTime   time.Time          // 上次余额同步时间
+	database              interface{}        // 数据库引用（用于自动更新余额）
+	userID                string             // 用户ID
 
 	// 手动平仓检测相关字段
 	previousPositions     map[string]PositionDetail // 上一周期的持仓快照
 	currentCyclePositions map[string]PositionDetail // 当前周期的持仓快照
+
+	// 开仓理由追踪相关字段
+	openPositions         map[string]map[string]interface{} // 开仓理由映射 (symbol_side -> 持仓信息)
+	openPositionsMutex    sync.RWMutex                      // 开仓理由映射读写锁
 }
 
 // NewAutoTrader 创建自动交易器
@@ -253,6 +257,8 @@ func NewAutoTrader(config AutoTraderConfig, database interface{}, userID string)
 		userID:                userID,
 		previousPositions:     make(map[string]PositionDetail),
 		currentCyclePositions: make(map[string]PositionDetail),
+		openPositions:         make(map[string]map[string]interface{}),
+		openPositionsMutex:    sync.RWMutex{},
 	}, nil
 }
 
@@ -581,6 +587,7 @@ func (at *AutoTrader) runCycle() error {
 			Price:     0,
 			Timestamp: time.Now(),
 			Success:   false,
+			Reasoning: d.Reasoning,
 		}
 
 		if err := at.executeDecisionWithRecord(&d, &actionRecord); err != nil {
@@ -710,6 +717,14 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 		peakPnlPct := at.peakPnLCache[symbol]
 		at.peakPnLCacheMutex.RUnlock()
 
+		// 从openPositions映射中获取开仓理由
+		reasoning := ""
+		at.openPositionsMutex.RLock()
+		if openPos, exists := at.openPositions[posKey]; exists {
+			reasoning = openPos["reasoning"].(string)
+		}
+		at.openPositionsMutex.RUnlock()
+
 		positionInfos = append(positionInfos, decision.PositionInfo{
 			Symbol:           symbol,
 			Side:             side,
@@ -723,6 +738,7 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 			LiquidationPrice: liquidationPrice,
 			MarginUsed:       marginUsed,
 			UpdateTime:       updateTime,
+			Reasoning:        reasoning,
 		})
 	}
 
@@ -878,6 +894,13 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
+	// 保存开仓理由到openPositions映射
+	at.openPositionsMutex.Lock()
+	at.openPositions[posKey] = map[string]interface{}{
+		"reasoning": decision.Reasoning,
+	}
+	at.openPositionsMutex.Unlock()
+
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
 		log.Printf("  ⚠ 设置止损失败: %v", err)
@@ -958,6 +981,13 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
+	// 保存开仓理由到openPositions映射
+	at.openPositionsMutex.Lock()
+	at.openPositions[posKey] = map[string]interface{}{
+		"reasoning": decision.Reasoning,
+	}
+	at.openPositionsMutex.Unlock()
+
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
 		log.Printf("  ⚠ 设置止损失败: %v", err)
@@ -991,6 +1021,12 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *decision.Decision, ac
 		actionRecord.OrderID = orderID
 	}
 
+	// 从openPositions映射中移除持仓记录
+	posKey := decision.Symbol + "_long"
+	at.openPositionsMutex.Lock()
+	delete(at.openPositions, posKey)
+	at.openPositionsMutex.Unlock()
+
 	log.Printf("  ✓ 平仓成功")
 	return nil
 }
@@ -1016,6 +1052,12 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *decision.Decision, a
 	if orderID, ok := order["orderId"].(int64); ok {
 		actionRecord.OrderID = orderID
 	}
+
+	// 从openPositions映射中移除持仓记录
+	posKey := decision.Symbol + "_short"
+	at.openPositionsMutex.Lock()
+	delete(at.openPositions, posKey)
+	at.openPositionsMutex.Unlock()
 
 	log.Printf("  ✓ 平仓成功")
 	return nil

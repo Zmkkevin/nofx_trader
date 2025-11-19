@@ -42,6 +42,7 @@ type PositionInfo struct {
 	LiquidationPrice float64 `json:"liquidation_price"`
 	MarginUsed       float64 `json:"margin_used"`
 	UpdateTime       int64   `json:"update_time"` // 持仓更新时间戳（毫秒）
+	Reasoning        string  `json:"reasoning"`   // 开仓理由
 }
 
 // AccountInfo 账户信息

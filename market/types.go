@@ -148,12 +148,12 @@ type LongerTermData struct {
 	SignalValues     []float64 // 信号线值
 	HistoValues      []float64 // 柱状图值
 	RSI14Values      []float64
-	FibRetrace382    float64   // 38.2%回撤位（最新值）
-	FibRetrace500    float64   // 50%回撤位（最新值）
-	FibRetrace618    float64   // 61.8%回撤位（最新值）
-	FibExtension1272 float64   // 127.2%扩展位（最新值）
-	FibExtension1618 float64   // 161.8%扩展位（最新值）
-	FibExtension2000 float64   // 200%扩展位（最新值）
+	FibRetrace382    float64 // 38.2%回撤位（最新值）
+	FibRetrace500    float64 // 50%回撤位（最新值）
+	FibRetrace618    float64 // 61.8%回撤位（最新值）
+	FibExtension1272 float64 // 127.2%扩展位（最新值）
+	FibExtension1618 float64 // 161.8%扩展位（最新值）
+	FibExtension2000 float64 // 200%扩展位（最新值）
 }
 
 // Format 格式化长期数据为字符串

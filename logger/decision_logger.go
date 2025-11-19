@@ -61,6 +61,7 @@ type DecisionAction struct {
 	Timestamp time.Time `json:"timestamp"` // 执行时间
 	Success   bool      `json:"success"`   // 是否成功
 	Error     string    `json:"error"`     // 错误信息
+	Reasoning string    `json:"reasoning"` // 开仓理由（AI决策中的reasoning）
 }
 
 // DecisionLogger 决策日志记录器
@@ -294,6 +295,7 @@ type TradeOutcome struct {
 	OpenTime      time.Time `json:"open_time"`      // 开仓时间
 	CloseTime     time.Time `json:"close_time"`     // 平仓时间
 	WasStopLoss   bool      `json:"was_stop_loss"`  // 是否止损
+	Reasoning     string    `json:"reasoning"`      // 开仓理由
 }
 
 // PerformanceAnalysis 交易表现分析
@@ -378,14 +380,15 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 
 				switch action.Action {
 				case "open_long", "open_short":
-					// 记录开仓
-					openPositions[posKey] = map[string]interface{}{
-						"side":      side,
-						"openPrice": action.Price,
-						"openTime":  action.Timestamp,
-						"quantity":  action.Quantity,
-						"leverage":  action.Leverage,
-					}
+				// 记录开仓
+				openPositions[posKey] = map[string]interface{}{
+					"side":      side,
+					"openPrice": action.Price,
+					"openTime":  action.Timestamp,
+					"quantity":  action.Quantity,
+					"leverage":  action.Leverage,
+					"reasoning": action.Reasoning, // 记录开仓理由
+				}
 				case "close_long", "close_short", "auto_close_long", "auto_close_short":
 					// 移除已平仓记录
 					delete(openPositions, posKey)
@@ -432,6 +435,7 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 					"openTime":           action.Timestamp,
 					"quantity":           action.Quantity,
 					"leverage":           action.Leverage,
+					"reasoning":          action.Reasoning, // 记录开仓理由
 					"remainingQuantity":  action.Quantity, // 🔧 BUG FIX：追蹤剩餘數量
 					"accumulatedPnL":     0.0,             // 🔧 BUG FIX：累積部分平倉盈虧
 					"partialCloseCount":  0,               // 🔧 BUG FIX：部分平倉次數
@@ -494,6 +498,12 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 								pnlPct = (accumulatedPnL / marginUsed) * 100
 							}
 
+							// 获取开仓理由
+							reasoning := ""
+							if reasoningVal, exists := openPos["reasoning"]; exists {
+								reasoning, _ = reasoningVal.(string)
+							}
+							
 							outcome := TradeOutcome{
 								Symbol:        symbol,
 								Side:          side,
@@ -508,6 +518,7 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 								Duration:      action.Timestamp.Sub(openTime).String(),
 								OpenTime:      openTime,
 								CloseTime:     action.Timestamp,
+								Reasoning:     reasoning, // 设置开仓理由
 							}
 
 							analysis.RecentTrades = append(analysis.RecentTrades, outcome)
@@ -554,6 +565,12 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 							pnlPct = (totalPnL / marginUsed) * 100
 						}
 
+						// 获取开仓理由
+						reasoning := ""
+						if reasoningVal, exists := openPos["reasoning"]; exists {
+							reasoning, _ = reasoningVal.(string)
+						}
+						
 						outcome := TradeOutcome{
 							Symbol:        symbol,
 							Side:          side,
@@ -568,6 +585,7 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 							Duration:      action.Timestamp.Sub(openTime).String(),
 							OpenTime:      openTime,
 							CloseTime:     action.Timestamp,
+							Reasoning:     reasoning, // 设置开仓理由
 						}
 
 						analysis.RecentTrades = append(analysis.RecentTrades, outcome)
