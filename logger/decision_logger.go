@@ -91,6 +91,8 @@ type IDecisionLogger interface {
 	LogDecision(record *DecisionRecord) error
 	// GetLatestRecords 获取最近N条记录（按时间正序：从旧到新）
 	GetLatestRecords(n int) ([]*DecisionRecord, error)
+	// GetLatestRecordsWithFilter 获取最近N条记录，支持过滤只包含操作的记录
+	GetLatestRecordsWithFilter(n int, onlyWithActions bool) ([]*DecisionRecord, error)
 	// GetRecordByDate 获取指定日期的所有记录
 	GetRecordByDate(date time.Time) ([]*DecisionRecord, error)
 	// CleanOldRecords 清理N天前的旧记录

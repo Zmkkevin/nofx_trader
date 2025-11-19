@@ -233,8 +233,8 @@ export const api = {
       params.append('trader_id', traderId)
     }
     params.append('limit', limit.toString())
-    if (onlyWithActions !== undefined) {
-      params.append('only_with_actions', onlyWithActions.toString())
+    if (onlyWithActions === true) {
+      params.append('only_with_actions', 'true')
     }
 
     const result = await httpClient.get<DecisionRecord[]>(
