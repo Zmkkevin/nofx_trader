@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -295,9 +296,20 @@ func (l *DecisionLogger) GetLatestRecordsWithFilter(n int, onlyWithActions bool)
 			continue
 		}
 
-		// 如果启用过滤，只保留有操作的记录
-		if onlyWithActions && len(record.Decisions) == 0 {
-			continue
+		// 如果启用过滤，只保留有实际交易操作的记录
+		if onlyWithActions {
+			hasRealAction := false
+			for _, decision := range record.Decisions {
+				// 检查是否有真实的交易操作（非 hold/wait）
+				action := strings.ToLower(decision.Action)
+				if action != "hold" && action != "wait" {
+					hasRealAction = true
+					break
+				}
+			}
+			if !hasRealAction {
+				continue
+			}
 		}
 
 		records = append(records, &record)

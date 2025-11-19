@@ -115,4 +115,54 @@ func TestGetLatestRecordsWithFilter(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 0, len(records), "Should return empty slice when no records have actions")
 	})
+
+	t.Run("GetLatestRecords with filter excludes hold and wait actions", func(t *testing.T) {
+		tmpDir3, err := ioutil.TempDir("", "decision_logger_filter_test_hold_wait")
+		require.NoError(t, err)
+		defer os.RemoveAll(tmpDir3)
+
+		logger3 := &DecisionLogger{logDir: tmpDir3}
+
+		// 创建测试记录：hold, wait, 实际操作
+		testCases := []struct {
+			cycle  int
+			action string
+		}{
+			{1, "hold"},       // 应该被过滤掉
+			{2, "wait"},       // 应该被过滤掉
+			{3, "HOLD"},       // 大写也应该被过滤掉
+			{4, "WAIT"},       // 大写也应该被过滤掉
+			{5, "open_long"},  // 应该保留
+			{6, "close_long"}, // 应该保留
+		}
+
+		for _, tc := range testCases {
+			ts := time.Now().Add(time.Duration(-tc.cycle) * time.Hour)
+			record := &DecisionRecord{
+				Timestamp:   ts,
+				CycleNumber: tc.cycle,
+				Decisions: []DecisionAction{
+					{Action: tc.action, Symbol: "BTC", Price: 50000},
+				},
+			}
+			data, _ := json.Marshal(record)
+			filename := filepath.Join(tmpDir3, ts.Format("decision_20060102_150405_cycle")+string(rune(tc.cycle+48))+".json")
+			ioutil.WriteFile(filename, data, 0644)
+		}
+
+		records, err := logger3.GetLatestRecordsWithFilter(10, true)
+		require.NoError(t, err)
+		assert.Equal(t, 2, len(records), "Should return only 2 records (open_long and close_long)")
+
+		// 验证返回的记录都不是 hold 或 wait
+		for _, record := range records {
+			for _, decision := range record.Decisions {
+				action := decision.Action
+				assert.NotEqual(t, "hold", action, "Should not contain 'hold' action")
+				assert.NotEqual(t, "wait", action, "Should not contain 'wait' action")
+				assert.NotEqual(t, "HOLD", action, "Should not contain 'HOLD' action")
+				assert.NotEqual(t, "WAIT", action, "Should not contain 'WAIT' action")
+			}
+		}
+	})
 }

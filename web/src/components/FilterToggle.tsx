@@ -16,7 +16,7 @@ interface FilterToggleProps {
   className?: string
 }
 
-export default function FilterToggle({
+function FilterToggle({
   enabled,
   onChange,
   language,
@@ -38,3 +38,5 @@ export default function FilterToggle({
     </button>
   )
 }
+
+export default FilterToggle
