@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"nofx/crypto"
@@ -64,6 +65,14 @@ func NewDatabase(dbPath string) (*Database, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		return nil, fmt.Errorf("启用外键失败: %w", err)
+	}
+	if err := tuneSQLiteConnection(db); err != nil {
+		return nil, err
+	}
 
 	// 🔒 启用 WAL 模式,提高并发性能和崩溃恢复能力
 	// WAL (Write-Ahead Logging) 模式的优势:
@@ -86,6 +95,9 @@ func NewDatabase(dbPath string) (*Database, error) {
 	database := &Database{db: db}
 	if err := database.createTables(); err != nil {
 		return nil, fmt.Errorf("创建表失败: %w", err)
+	}
+	if err := database.ensureBacktestRunColumns(); err != nil {
+		return nil, fmt.Errorf("初始化回测表结构失败: %w", err)
 	}
 
 	if err := database.initDefaultData(); err != nil {
@@ -185,6 +197,99 @@ func (d *Database) createTables() error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
+		// 回测运行主表
+		`CREATE TABLE IF NOT EXISTS backtest_runs (
+			run_id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL DEFAULT 'default',
+			config_json TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT 'created',
+			label TEXT DEFAULT '',
+			symbol_count INTEGER DEFAULT 0,
+			decision_tf TEXT DEFAULT '',
+			processed_bars INTEGER DEFAULT 0,
+			progress_pct REAL DEFAULT 0,
+			equity_last REAL DEFAULT 0,
+			max_drawdown_pct REAL DEFAULT 0,
+			liquidated BOOLEAN DEFAULT 0,
+			liquidation_note TEXT DEFAULT '',
+			prompt_template TEXT DEFAULT '',
+			custom_prompt TEXT DEFAULT '',
+			override_prompt BOOLEAN DEFAULT 0,
+			ai_provider TEXT DEFAULT '',
+			ai_model TEXT DEFAULT '',
+			last_error TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// 回测检查点
+		`CREATE TABLE IF NOT EXISTS backtest_checkpoints (
+			run_id TEXT PRIMARY KEY,
+			payload BLOB NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE
+		)`,
+
+		// 回测权益曲线
+		`CREATE TABLE IF NOT EXISTS backtest_equity (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id TEXT NOT NULL,
+			ts INTEGER NOT NULL,
+			equity REAL NOT NULL,
+			available REAL NOT NULL,
+			pnl REAL NOT NULL,
+			pnl_pct REAL NOT NULL,
+			dd_pct REAL NOT NULL,
+			cycle INTEGER NOT NULL,
+			FOREIGN KEY (run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE
+		)`,
+
+		// 回测交易记录
+		`CREATE TABLE IF NOT EXISTS backtest_trades (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id TEXT NOT NULL,
+			ts INTEGER NOT NULL,
+			symbol TEXT NOT NULL,
+			action TEXT NOT NULL,
+			side TEXT DEFAULT '',
+			qty REAL DEFAULT 0,
+			price REAL DEFAULT 0,
+			fee REAL DEFAULT 0,
+			slippage REAL DEFAULT 0,
+			order_value REAL DEFAULT 0,
+			realized_pnl REAL DEFAULT 0,
+			leverage INTEGER DEFAULT 0,
+			cycle INTEGER DEFAULT 0,
+			position_after REAL DEFAULT 0,
+			liquidation BOOLEAN DEFAULT 0,
+			note TEXT DEFAULT '',
+			FOREIGN KEY (run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE
+		)`,
+
+		// 回测指标
+		`CREATE TABLE IF NOT EXISTS backtest_metrics (
+			run_id TEXT PRIMARY KEY,
+			payload BLOB NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE
+		)`,
+
+		// 回测决策日志
+		`CREATE TABLE IF NOT EXISTS backtest_decisions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id TEXT NOT NULL,
+			cycle INTEGER NOT NULL,
+			payload BLOB NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE
+		)`,
+
+		// 索引
+		`CREATE INDEX IF NOT EXISTS idx_backtest_runs_state ON backtest_runs(state, updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_backtest_equity_run_ts ON backtest_equity(run_id, ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_ts ON backtest_trades(run_id, ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_backtest_decisions_run_cycle ON backtest_decisions(run_id, cycle)`,
+
 		// 内测码表
 		`CREATE TABLE IF NOT EXISTS beta_codes (
 			code TEXT PRIMARY KEY,
@@ -270,11 +375,99 @@ func (d *Database) createTables() error {
 		log.Printf("⚠️ 迁移exchanges表失败: %v", err)
 	}
 
+	// 修复 traders 表的外键约束以匹配 exchanges 的复合主键
+	err = d.fixTradersForeignKeys()
+	if err != nil {
+		log.Printf("⚠️ 修复traders表外键失败: %v", err)
+	}
+
+	return nil
+}
+
+func (d *Database) ensureBacktestRunColumns() error {
+	addColumn := func(table, column, definition string) error {
+		exists, err := columnExists(d.db, table, column)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+		_, err = d.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+		return err
+	}
+	if err := addColumn("backtest_runs", "label", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addColumn("backtest_runs", "last_error", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addColumn("backtest_runs", "prompt_variant", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addColumn("backtest_runs", "prompt_content_snapshot", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addColumn("backtest_trades", "leverage", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			ctype      string
+			notnull    int
+			dfltValue  any
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func tuneSQLiteConnection(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	statements := []string{
+		`PRAGMA busy_timeout = 5000`,
+		`PRAGMA journal_mode = WAL`,
+		`PRAGMA synchronous = NORMAL`,
+	}
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("执行 %s 失败: %w", stmt, err)
+		}
+	}
 	return nil
 }
 
 // initDefaultData 初始化默认数据
 func (d *Database) initDefaultData() error {
+	// 🔧 确保 'default' 用户存在（因为 ai_models 和 exchanges 表有 FK 约束）
+	// 这个用户用于系统级别的默认配置
+	_, err := d.db.Exec(`
+		INSERT OR IGNORE INTO users (id, email, password_hash, otp_secret, otp_verified)
+		VALUES ('default', 'default@system.local', '', '', 0)
+	`)
+	if err != nil {
+		return fmt.Errorf("初始化默认用户失败: %w", err)
+	}
+
 	// 初始化AI模型（使用default用户）
 	aiModels := []struct {
 		id, name, provider string
@@ -285,7 +478,7 @@ func (d *Database) initDefaultData() error {
 
 	for _, model := range aiModels {
 		_, err := d.db.Exec(`
-			INSERT OR IGNORE INTO ai_models (id, user_id, name, provider, enabled) 
+			INSERT OR IGNORE INTO ai_models (id, user_id, name, provider, enabled)
 			VALUES (?, 'default', ?, ?, 0)
 		`, model.id, model.name, model.provider)
 		if err != nil {
@@ -324,6 +517,7 @@ func (d *Database) initDefaultData() error {
 		"btc_eth_leverage":     "5",                                                                                   // BTC/ETH杠杆倍数
 		"altcoin_leverage":     "5",                                                                                   // 山寨币杠杆倍数
 		"jwt_secret":           "",                                                                                    // JWT密钥，默认为空，由config.json或系统生成
+		"registration_enabled": "true",                                                                                // 默认允许注册
 	}
 
 	for key, value := range systemConfigs {
@@ -418,6 +612,102 @@ func (d *Database) migrateExchangesTable() error {
 	}
 
 	log.Printf("✅ exchanges表迁移完成")
+	return nil
+}
+
+// fixTradersForeignKeys 修复 traders 表的外键约束
+// 问题：exchanges 表迁移为复合主键 (id, user_id) 后，traders 表的外键仍然只引用 exchanges(id)
+// 解决：重建 traders 表，使用复合外键 (exchange_id, user_id) 引用 exchanges(id, user_id)
+func (d *Database) fixTradersForeignKeys() error {
+	// 检查是否需要修复（通过检查是否存在临时表判断）
+	var count int
+	err := d.db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='traders_fixed'
+	`).Scan(&count)
+	if err != nil {
+		return err
+	}
+
+	// 如果已经修复过，直接返回
+	if count > 0 {
+		return nil
+	}
+
+	log.Printf("🔧 开始修复traders表外键约束...")
+
+	// 创建新的 traders 表，使用正确的复合外键
+	_, err = d.db.Exec(`
+		CREATE TABLE traders_fixed (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL DEFAULT 'default',
+			name TEXT NOT NULL,
+			ai_model_id TEXT NOT NULL,
+			exchange_id TEXT NOT NULL,
+			initial_balance REAL NOT NULL,
+			scan_interval_minutes INTEGER DEFAULT 3,
+			is_running BOOLEAN DEFAULT 0,
+			btc_eth_leverage INTEGER DEFAULT 5,
+			altcoin_leverage INTEGER DEFAULT 5,
+			trading_symbols TEXT DEFAULT '',
+			use_coin_pool BOOLEAN DEFAULT 0,
+			use_oi_top BOOLEAN DEFAULT 0,
+			custom_prompt TEXT DEFAULT '',
+			override_base_prompt BOOLEAN DEFAULT 0,
+			system_prompt_template TEXT DEFAULT 'default',
+			is_cross_margin BOOLEAN DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (ai_model_id) REFERENCES ai_models(id),
+			FOREIGN KEY (exchange_id, user_id) REFERENCES exchanges(id, user_id)
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("创建新traders表失败: %w", err)
+	}
+
+	// 复制数据到新表（只复制已有的列）
+	_, err = d.db.Exec(`
+		INSERT INTO traders_fixed
+		SELECT id, user_id, name, ai_model_id, exchange_id, initial_balance,
+		       scan_interval_minutes, is_running,
+		       COALESCE(btc_eth_leverage, 5), COALESCE(altcoin_leverage, 5),
+		       COALESCE(trading_symbols, ''), COALESCE(use_coin_pool, 0), COALESCE(use_oi_top, 0),
+		       COALESCE(custom_prompt, ''), COALESCE(override_base_prompt, 0),
+		       COALESCE(system_prompt_template, 'default'), COALESCE(is_cross_margin, 1),
+		       created_at, updated_at
+		FROM traders
+	`)
+	if err != nil {
+		return fmt.Errorf("复制traders数据失败: %w", err)
+	}
+
+	// 删除旧表
+	_, err = d.db.Exec(`DROP TABLE traders`)
+	if err != nil {
+		return fmt.Errorf("删除旧traders表失败: %w", err)
+	}
+
+	// 重命名新表
+	_, err = d.db.Exec(`ALTER TABLE traders_fixed RENAME TO traders`)
+	if err != nil {
+		return fmt.Errorf("重命名traders表失败: %w", err)
+	}
+
+	// 重新创建触发器
+	_, err = d.db.Exec(`
+		CREATE TRIGGER IF NOT EXISTS update_traders_updated_at
+			AFTER UPDATE ON traders
+			BEGIN
+				UPDATE traders SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+			END
+	`)
+	if err != nil {
+		return fmt.Errorf("创建traders触发器失败: %w", err)
+	}
+
+	log.Printf("✅ traders表外键修复完成")
 	return nil
 }
 
@@ -646,6 +936,103 @@ func (d *Database) GetAIModels(userID string) ([]*AIModelConfig, error) {
 	return models, nil
 }
 
+// GetAIModel 根据模型ID和用户ID获取单个AI模型配置，若用户下不存在则回退到default用户。
+func (d *Database) GetAIModel(userID, modelID string) (*AIModelConfig, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("模型ID不能为空")
+	}
+
+	candidates := []string{}
+	if userID != "" {
+		candidates = append(candidates, userID)
+	}
+	if userID != "default" {
+		candidates = append(candidates, "default")
+	}
+	if len(candidates) == 0 {
+		candidates = append(candidates, "default")
+	}
+
+	for _, uid := range candidates {
+		var model AIModelConfig
+		err := d.db.QueryRow(`
+			SELECT id, user_id, name, provider, enabled, api_key,
+			       COALESCE(custom_api_url, ''), COALESCE(custom_model_name, ''), created_at, updated_at
+			FROM ai_models
+			WHERE user_id = ? AND id = ?
+			LIMIT 1
+		`, uid, modelID).Scan(
+			&model.ID,
+			&model.UserID,
+			&model.Name,
+			&model.Provider,
+			&model.Enabled,
+			&model.APIKey,
+			&model.CustomAPIURL,
+			&model.CustomModelName,
+			&model.CreatedAt,
+			&model.UpdatedAt,
+		)
+		if err == nil {
+			// 解密API Key（与 GetAIModels 行为保持一致）
+			model.APIKey = d.decryptSensitiveData(model.APIKey)
+			return &model, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+
+	return nil, sql.ErrNoRows
+}
+
+// GetDefaultAIModel 获取指定用户（或默认用户）的首个启用的AI模型。
+func (d *Database) GetDefaultAIModel(userID string) (*AIModelConfig, error) {
+	if userID == "" {
+		userID = "default"
+	}
+	model, err := d.firstEnabledAIModel(userID)
+	if err == nil {
+		return model, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if userID != "default" {
+		return d.firstEnabledAIModel("default")
+	}
+	return nil, fmt.Errorf("请先在系统中配置可用的AI模型")
+}
+
+func (d *Database) firstEnabledAIModel(userID string) (*AIModelConfig, error) {
+	var model AIModelConfig
+	err := d.db.QueryRow(`
+		SELECT id, user_id, name, provider, enabled, api_key,
+		       COALESCE(custom_api_url, ''), COALESCE(custom_model_name, ''), created_at, updated_at
+		FROM ai_models
+		WHERE user_id = ? AND enabled = 1
+		ORDER BY datetime(updated_at) DESC, id ASC
+		LIMIT 1
+	`, userID).Scan(
+		&model.ID,
+		&model.UserID,
+		&model.Name,
+		&model.Provider,
+		&model.Enabled,
+		&model.APIKey,
+		&model.CustomAPIURL,
+		&model.CustomModelName,
+		&model.CreatedAt,
+		&model.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// 解密API Key，避免上层拿到加密串导致下游认证失败
+	model.APIKey = d.decryptSensitiveData(model.APIKey)
+	return &model, nil
+}
+
 // UpdateAIModel 更新AI模型配置，如果不存在则创建用户特定配置
 func (d *Database) UpdateAIModel(userID, id string, enabled bool, apiKey, customAPIURL, customModelName string) error {
 	// 先尝试精确匹配 ID（新版逻辑，支持多个相同 provider 的模型）
@@ -855,12 +1242,17 @@ func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secre
 
 		log.Printf("🆕 UpdateExchange: 创建新记录 ID=%s, name=%s, type=%s", id, name, typ)
 
-		// 创建用户特定的配置，使用原始的交易所ID
+		// 🔒 加密敏感字段后再插入
+		encryptedAPIKey := d.encryptSensitiveData(apiKey)
+		encryptedSecretKey := d.encryptSensitiveData(secretKey)
+		encryptedAsterPrivateKey := d.encryptSensitiveData(asterPrivateKey)
+
+		// 创建用户特定的配置
 		_, err = d.db.Exec(`
 			INSERT INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, testnet,
 			                       hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-		`, id, userID, name, typ, enabled, apiKey, secretKey, testnet, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey)
+		`, id, userID, name, typ, enabled, encryptedAPIKey, encryptedSecretKey, testnet, hyperliquidWalletAddr, asterUser, asterSigner, encryptedAsterPrivateKey)
 
 		if err != nil {
 			log.Printf("❌ UpdateExchange: 创建记录失败: %v", err)
@@ -954,12 +1346,12 @@ func (d *Database) UpdateTraderStatus(userID, id string, isRunning bool) error {
 func (d *Database) UpdateTrader(trader *TraderRecord) error {
 	_, err := d.db.Exec(`
 		UPDATE traders SET
-			name = ?, ai_model_id = ?, exchange_id = ?, initial_balance = ?,
+			name = ?, ai_model_id = ?, exchange_id = ?,
 			scan_interval_minutes = ?, btc_eth_leverage = ?, altcoin_leverage = ?,
 			trading_symbols = ?, custom_prompt = ?, override_base_prompt = ?,
 			system_prompt_template = ?, is_cross_margin = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND user_id = ?
-	`, trader.Name, trader.AIModelID, trader.ExchangeID, trader.InitialBalance,
+	`, trader.Name, trader.AIModelID, trader.ExchangeID,
 		trader.ScanIntervalMinutes, trader.BTCETHLeverage, trader.AltcoinLeverage,
 		trader.TradingSymbols, trader.CustomPrompt, trader.OverrideBasePrompt,
 		trader.SystemPromptTemplate, trader.IsCrossMargin, trader.ID, trader.UserID)
@@ -972,7 +1364,8 @@ func (d *Database) UpdateTraderCustomPrompt(userID, id string, customPrompt stri
 	return err
 }
 
-// UpdateTraderInitialBalance 更新交易员初始余额（用于自动同步交易所实际余额）
+// UpdateTraderInitialBalance 更新交易员初始余额（仅支持手动更新）
+// ⚠️ 注意：系统不会自动调用此方法，仅供用户在充值/提现后手动同步使用
 func (d *Database) UpdateTraderInitialBalance(userID, id string, newBalance float64) error {
 	_, err := d.db.Exec(`UPDATE traders SET initial_balance = ? WHERE id = ? AND user_id = ?`, newBalance, id, userID)
 	return err
@@ -1126,6 +1519,11 @@ func (d *Database) GetCustomCoins() []string {
 }
 
 // Close 关闭数据库连接
+// Conn 返回底层 *sql.DB，供需要执行自定义查询的模块使用。
+func (d *Database) Conn() *sql.DB {
+	return d.db
+}
+
 func (d *Database) Close() error {
 	return d.db.Close()
 }

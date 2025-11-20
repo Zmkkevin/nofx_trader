@@ -4,6 +4,8 @@ import useSWR from 'swr'
 import { api } from '../lib/api'
 import { EquityChart } from '../components/EquityChart'
 import AILearning from '../components/AILearning'
+import RecordLimitSelector from '../components/RecordLimitSelector'
+import FilterToggle from '../components/FilterToggle'
 import { useLanguage } from '../contexts/LanguageContext'
 import { useAuth } from '../contexts/AuthContext'
 import { t, type Language } from '../i18n/translations'
@@ -60,10 +62,22 @@ export default function TraderDashboard() {
     return saved ? parseInt(saved, 10) : 5
   })
 
+  // 过滤器状态：只显示有操作的决策（从 localStorage 读取，默认 false）
+  const [showOnlyWithActions, setShowOnlyWithActions] = useState<boolean>(() => {
+    const saved = localStorage.getItem('showOnlyWithActions')
+    return saved ? JSON.parse(saved) : false
+  })
+
   // 当 limit 变化时保存到 localStorage
   const handleLimitChange = (newLimit: number) => {
     setDecisionLimit(newLimit)
     localStorage.setItem('decisionLimit', newLimit.toString())
+  }
+
+  // 当过滤器状态变化时保存到 localStorage
+  const handleFilterChange = (enabled: boolean) => {
+    setShowOnlyWithActions(enabled)
+    localStorage.setItem('showOnlyWithActions', JSON.stringify(enabled))
   }
 
   // 获取trader列表（仅在用户登录时）
@@ -93,7 +107,7 @@ export default function TraderDashboard() {
 
   // 如果在trader页面，获取该trader的数据
   const { data: status } = useSWR<SystemStatus>(
-    selectedTraderId ? `status-${selectedTraderId}` : null,
+    user && token && selectedTraderId ? `status-${selectedTraderId}` : null,
     () => api.getStatus(selectedTraderId),
     {
       refreshInterval: 15000,
@@ -103,7 +117,7 @@ export default function TraderDashboard() {
   )
 
   const { data: account } = useSWR<AccountInfo>(
-    selectedTraderId ? `account-${selectedTraderId}` : null,
+    user && token && selectedTraderId ? `account-${selectedTraderId}` : null,
     () => api.getAccount(selectedTraderId),
     {
       refreshInterval: 15000,
@@ -113,7 +127,7 @@ export default function TraderDashboard() {
   )
 
   const { data: positions } = useSWR<Position[]>(
-    selectedTraderId ? `positions-${selectedTraderId}` : null,
+    user && token && selectedTraderId ? `positions-${selectedTraderId}` : null,
     () => api.getPositions(selectedTraderId),
     {
       refreshInterval: 15000,
@@ -123,10 +137,10 @@ export default function TraderDashboard() {
   )
 
   const { data: decisions } = useSWR<DecisionRecord[]>(
-    selectedTraderId
-      ? `decisions/latest-${selectedTraderId}-${decisionLimit}`
+    user && token && selectedTraderId
+      ? `decisions/latest-${selectedTraderId}-${decisionLimit}-${showOnlyWithActions}`
       : null,
-    () => api.getLatestDecisions(selectedTraderId, decisionLimit),
+    () => api.getLatestDecisions(selectedTraderId, decisionLimit, showOnlyWithActions),
     {
       refreshInterval: 30000,
       revalidateOnFocus: false,
@@ -135,7 +149,7 @@ export default function TraderDashboard() {
   )
 
   const { data: stats } = useSWR<Statistics>(
-    selectedTraderId ? `statistics-${selectedTraderId}` : null,
+    user && token && selectedTraderId ? `statistics-${selectedTraderId}` : null,
     () => api.getStatistics(selectedTraderId),
     {
       refreshInterval: 30000,
@@ -282,6 +296,8 @@ export default function TraderDashboard() {
     )
   }
 
+  const highlightColor = '#60a5fa'
+
   return (
     <div>
       {/* Trader Header */}
@@ -294,25 +310,25 @@ export default function TraderDashboard() {
           boxShadow: '0 0 30px rgba(240, 185, 11, 0.15)',
         }}
       >
-        <div className="flex items-start justify-between mb-3">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
           <h2
-            className="text-2xl font-bold flex items-center gap-2"
+            className="text-2xl font-bold flex items-center gap-2 min-w-0"
             style={{ color: '#EAECEF' }}
           >
             <span
-              className="w-10 h-10 rounded-full flex items-center justify-center"
+              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center"
               style={{
                 background: 'linear-gradient(135deg, #F0B90B 0%, #FCD535 100%)',
               }}
             >
               <Bot className="w-5 h-5" style={{ color: '#0B0E11' }} />
             </span>
-            {selectedTrader.trader_name}
+            <span className="truncate">{selectedTrader.trader_name}</span>
           </h2>
 
           {/* Trader Selector */}
           {traders && traders.length > 0 && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
               <span className="text-sm" style={{ color: '#848E9C' }}>
                 {t('switchTrader', language)}:
               </span>
@@ -336,17 +352,17 @@ export default function TraderDashboard() {
           )}
         </div>
         <div
-          className="flex items-center gap-4 text-sm"
+          className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm"
           style={{ color: '#848E9C' }}
         >
-          <span>
+          <span className="whitespace-nowrap">
             AI Model:{' '}
             <span
               className="font-semibold"
               style={{
                 color: selectedTrader.ai_model.includes('qwen')
                   ? '#c084fc'
-                  : '#60a5fa',
+                  : highlightColor,
               }}
             >
               {getModelDisplayName(
@@ -355,12 +371,16 @@ export default function TraderDashboard() {
               )}
             </span>
           </span>
+          <span className="hidden sm:inline">•</span>
+          <span className="whitespace-nowrap">
+            Prompt: <span className="font-semibold" style={{ color: highlightColor }}>{selectedTrader.system_prompt_template || '-'}</span>
+          </span>
           {status && (
             <>
-              <span>•</span>
-              <span>Cycles: {status.call_count}</span>
-              <span>•</span>
-              <span>Runtime: {status.runtime_minutes} min</span>
+              <span className="hidden sm:inline">•</span>
+              <span className="whitespace-nowrap">Cycles: {status.call_count}</span>
+              <span className="hidden sm:inline">•</span>
+              <span className="whitespace-nowrap">Runtime: {status.runtime_minutes} min</span>
             </>
           )}
         </div>
@@ -384,7 +404,13 @@ export default function TraderDashboard() {
       )}
 
       {/* Account Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+        <StatCard
+          title={t('initialBalance', language)}
+          value={`${account?.initial_balance?.toFixed(2) || '0.00'} USDT`}
+          coloredSubtitle={`${account?.total_pnl !== undefined && account.total_pnl >= 0 ? '+' : ''}${account?.total_pnl?.toFixed(2) || '0.00'} USDT`}
+          positive={(account?.total_pnl ?? 0) >= 0}
+        />
         <StatCard
           title={t('totalEquity', language)}
           value={`${account?.total_equity?.toFixed(2) || '0.00'} USDT`}
@@ -609,29 +635,18 @@ export default function TraderDashboard() {
               </div>
             </div>
 
-            {/* 显示数量选择器 */}
+            {/* 过滤器和数量选择器 */}
             <div className="flex items-center gap-2">
-              <span className="text-xs" style={{ color: '#848E9C' }}>
-                {language === 'zh' ? '显示' : 'Show'}:
-              </span>
-              <select
-                value={decisionLimit}
-                onChange={(e) => handleLimitChange(parseInt(e.target.value, 10))}
-                className="rounded px-2 py-1 text-xs font-medium cursor-pointer transition-colors"
-                style={{
-                  background: '#1E2329',
-                  border: '1px solid #2B3139',
-                  color: '#EAECEF',
-                }}
-              >
-                <option value={5}>5</option>
-                <option value={10}>10</option>
-                <option value={20}>20</option>
-                <option value={50}>50</option>
-              </select>
-              <span className="text-xs" style={{ color: '#848E9C' }}>
-                {language === 'zh' ? '条' : ''}
-              </span>
+              <FilterToggle
+                enabled={showOnlyWithActions}
+                onChange={handleFilterChange}
+                language={language}
+              />
+              <RecordLimitSelector
+                limit={decisionLimit}
+                onLimitChange={handleLimitChange}
+                language={language}
+              />
             </div>
           </div>
 
@@ -678,12 +693,14 @@ function StatCard({
   change,
   positive,
   subtitle,
+  coloredSubtitle,
 }: {
   title: string
   value: string
   change?: number
   positive?: boolean
   subtitle?: string
+  coloredSubtitle?: string
 }) {
   return (
     <div className="stat-card animate-fade-in">
@@ -708,6 +725,14 @@ function StatCard({
             {positive ? '▲' : '▼'} {positive ? '+' : ''}
             {change.toFixed(2)}%
           </div>
+        </div>
+      )}
+      {coloredSubtitle && (
+        <div
+          className="text-sm mt-2 mono font-bold"
+          style={{ color: positive ? '#0ECB81' : '#F6465D' }}
+        >
+          {coloredSubtitle}
         </div>
       )}
       {subtitle && (

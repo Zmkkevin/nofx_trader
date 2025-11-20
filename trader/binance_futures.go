@@ -915,3 +915,64 @@ func stringContains(s, substr string) bool {
 	}
 	return false
 }
+
+// GetRecentFills 获取最近的成交记录
+func (t *FuturesTrader) GetRecentFills(symbol string, startTime int64, endTime int64) ([]map[string]interface{}, error) {
+	// endTime = 0 表示当前时间
+	if endTime == 0 {
+		endTime = time.Now().UnixMilli()
+	}
+
+	// 调用 Binance API 获取成交记录
+	service := t.client.NewListAccountTradeService().
+		Symbol(symbol).
+		StartTime(startTime).
+		EndTime(endTime)
+
+	trades, err := service.Do(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("获取成交记录失败: %w", err)
+	}
+
+	// 转换为统一格式
+	var result []map[string]interface{}
+
+	for _, trade := range trades {
+		// 解析价格和数量
+		price, err := strconv.ParseFloat(trade.Price, 64)
+		if err != nil {
+			log.Printf("⚠️ 解析成交价格失败: %v", err)
+			continue
+		}
+
+		quantity, err := strconv.ParseFloat(trade.Quantity, 64)
+		if err != nil {
+			log.Printf("⚠️ 解析成交数量失败: %v", err)
+			continue
+		}
+
+		// 解析手续费
+		commission, err := strconv.ParseFloat(trade.Commission, 64)
+		if err != nil {
+			commission = 0.0
+		}
+
+		// Binance 的 Side 字段: "BUY" 或 "SELL"
+		// 转换为统一格式 "Buy" / "Sell"
+		side := "Buy"
+		if trade.Side == futures.SideTypeSell {
+			side = "Sell"
+		}
+
+		result = append(result, map[string]interface{}{
+			"symbol":    symbol,
+			"side":      side,
+			"price":     price,
+			"quantity":  quantity,
+			"timestamp": trade.Time,
+			"fee":       commission,
+		})
+	}
+
+	return result, nil
+}

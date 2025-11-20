@@ -12,7 +12,9 @@ import {
 import useSWR from 'swr'
 import { api } from '../lib/api'
 import { useLanguage } from '../contexts/LanguageContext'
+import { useAuth } from '../contexts/AuthContext'
 import { t } from '../i18n/translations'
+import { formatTimestamp } from '../lib/formatTimestamp'
 import {
   AlertTriangle,
   BarChart3,
@@ -36,10 +38,11 @@ interface EquityChartProps {
 
 export function EquityChart({ traderId }: EquityChartProps) {
   const { language } = useLanguage()
+  const { user, token } = useAuth()
   const [displayMode, setDisplayMode] = useState<'dollar' | 'percent'>('dollar')
 
   const { data: history, error } = useSWR<EquityPoint[]>(
-    traderId ? `equity-history-${traderId}` : 'equity-history',
+    user && token && traderId ? `equity-history-${traderId}` : null,
     () => api.getEquityHistory(traderId),
     {
       refreshInterval: 30000, // 30秒刷新（历史数据更新频率较低）
@@ -49,7 +52,7 @@ export function EquityChart({ traderId }: EquityChartProps) {
   )
 
   const { data: account } = useSWR(
-    traderId ? `account-${traderId}` : 'account',
+    user && token && traderId ? `account-${traderId}` : null,
     () => api.getAccount(traderId),
     {
       refreshInterval: 15000, // 15秒刷新（配合后端缓存）
@@ -125,7 +128,9 @@ export function EquityChart({ traderId }: EquityChartProps) {
     const pnl = point.total_equity - initialBalance
     const pnlPct = ((pnl / initialBalance) * 100).toFixed(2)
     return {
-      time: new Date(point.timestamp).toLocaleTimeString('zh-CN', {
+      time: new Date(point.timestamp).toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
         hour: '2-digit',
         minute: '2-digit',
       }),
@@ -134,11 +139,17 @@ export function EquityChart({ traderId }: EquityChartProps) {
       raw_equity: point.total_equity,
       raw_pnl: pnl,
       raw_pnl_pct: parseFloat(pnlPct),
+      timestamp: point.timestamp,
     }
   })
 
   const currentValue = chartData[chartData.length - 1]
   const isProfit = currentValue.raw_pnl >= 0
+
+  // Get the latest timestamp for display
+  const latestTimestamp = validHistory.length > 0
+    ? validHistory[validHistory.length - 1].timestamp
+    : null
 
   // 计算Y轴范围
   const calculateYDomain = () => {
@@ -173,6 +184,11 @@ export function EquityChart({ traderId }: EquityChartProps) {
           <div className="text-xs mb-1" style={{ color: '#848E9C' }}>
             Cycle #{data.cycle}
           </div>
+          {data.timestamp && (
+            <div className="text-xs mb-2" style={{ color: '#848E9C' }}>
+              {formatTimestamp(data.timestamp, language)}
+            </div>
+          )}
           <div className="font-bold mono" style={{ color: '#EAECEF' }}>
             {data.raw_equity.toFixed(2)} USDT
           </div>
@@ -395,6 +411,15 @@ export function EquityChart({ traderId }: EquityChartProps) {
           >
             {initialBalance.toFixed(2)} USDT
           </div>
+          {currentValue && (
+            <div
+              className="text-xs mono font-bold mt-1"
+              style={{ color: isProfit ? '#0ECB81' : '#F6465D' }}
+            >
+              {isProfit ? '+' : ''}
+              {currentValue.raw_pnl.toFixed(2)} USDT
+            </div>
+          )}
         </div>
         <div
           className="p-2 rounded transition-all hover:bg-opacity-50"
@@ -412,6 +437,14 @@ export function EquityChart({ traderId }: EquityChartProps) {
           >
             {currentValue.raw_equity.toFixed(2)} USDT
           </div>
+          {latestTimestamp && (
+            <div
+              className="text-xs mt-1"
+              style={{ color: '#848E9C' }}
+            >
+              {formatTimestamp(latestTimestamp, language)}
+            </div>
+          )}
         </div>
         <div
           className="p-2 rounded transition-all hover:bg-opacity-50"

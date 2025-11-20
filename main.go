@@ -6,10 +6,12 @@ import (
 	"log"
 	"nofx/api"
 	"nofx/auth"
+	"nofx/backtest"
 	"nofx/config"
 	"nofx/crypto"
 	"nofx/manager"
 	"nofx/market"
+	"nofx/mcp"
 	"nofx/pool"
 	"os"
 	"os/signal"
@@ -23,19 +25,21 @@ import (
 // ConfigFile 配置文件结构，只包含需要同步到数据库的字段
 // TODO 现在与config.Config相同，未来会被替换， 现在为了兼容性不得不保留当前文件
 type ConfigFile struct {
-	BetaMode           bool                  `json:"beta_mode"`
-	APIServerPort      int                   `json:"api_server_port"`
-	UseDefaultCoins    bool                  `json:"use_default_coins"`
-	DefaultCoins       []string              `json:"default_coins"`
-	CoinPoolAPIURL     string                `json:"coin_pool_api_url"`
-	OITopAPIURL        string                `json:"oi_top_api_url"`
-	MaxDailyLoss       float64               `json:"max_daily_loss"`
-	MaxDrawdown        float64               `json:"max_drawdown"`
-	StopTradingMinutes int                   `json:"stop_trading_minutes"`
-	Leverage           config.LeverageConfig `json:"leverage"`
-	JWTSecret          string                `json:"jwt_secret"`
-	DataKLineTime      string                `json:"data_k_line_time"`
-	Log                *config.LogConfig     `json:"log"` // 日志配置
+	BetaMode               bool                  `json:"beta_mode"`
+	APIServerPort          int                   `json:"api_server_port"`
+	UseDefaultCoins        bool                  `json:"use_default_coins"`
+	DefaultCoins           []string              `json:"default_coins"`
+	CoinPoolAPIURL         string                `json:"coin_pool_api_url"`
+	OITopAPIURL            string                `json:"oi_top_api_url"`
+	MaxDailyLoss           float64               `json:"max_daily_loss"`
+	MaxDrawdown            float64               `json:"max_drawdown"`
+	StopTradingMinutes     int                   `json:"stop_trading_minutes"`
+	Leverage               config.LeverageConfig `json:"leverage"`
+	JWTSecret              string                `json:"jwt_secret"`
+	RegistrationEnabled    *bool                 `json:"registration_enabled"`
+	DataKLineTime          string                `json:"data_k_line_time"`
+	Log                    *config.LogConfig     `json:"log"`                      // 日志配置
+	TokenExpirationMinutes int                   `json:"token_expiration_minutes"` // Token 过期时间，单位分钟
 }
 
 // loadConfigFile 读取并解析config.json文件
@@ -71,14 +75,15 @@ func syncConfigToDatabase(database *config.Database, configFile *ConfigFile) err
 
 	// 同步各配置项到数据库
 	configs := map[string]string{
-		"beta_mode":            fmt.Sprintf("%t", configFile.BetaMode),
-		"api_server_port":      strconv.Itoa(configFile.APIServerPort),
-		"use_default_coins":    fmt.Sprintf("%t", configFile.UseDefaultCoins),
-		"coin_pool_api_url":    configFile.CoinPoolAPIURL,
-		"oi_top_api_url":       configFile.OITopAPIURL,
-		"max_daily_loss":       fmt.Sprintf("%.1f", configFile.MaxDailyLoss),
-		"max_drawdown":         fmt.Sprintf("%.1f", configFile.MaxDrawdown),
-		"stop_trading_minutes": strconv.Itoa(configFile.StopTradingMinutes),
+		"beta_mode":                fmt.Sprintf("%t", configFile.BetaMode),
+		"api_server_port":          strconv.Itoa(configFile.APIServerPort),
+		"token_expiration_minutes": strconv.Itoa(configFile.TokenExpirationMinutes),
+		"use_default_coins":        fmt.Sprintf("%t", configFile.UseDefaultCoins),
+		"coin_pool_api_url":        configFile.CoinPoolAPIURL,
+		"oi_top_api_url":           configFile.OITopAPIURL,
+		"max_daily_loss":           fmt.Sprintf("%.1f", configFile.MaxDailyLoss),
+		"max_drawdown":             fmt.Sprintf("%.1f", configFile.MaxDrawdown),
+		"stop_trading_minutes":     strconv.Itoa(configFile.StopTradingMinutes),
 	}
 
 	// 同步default_coins（转换为JSON字符串存储）
@@ -100,6 +105,10 @@ func syncConfigToDatabase(database *config.Database, configFile *ConfigFile) err
 	// 如果JWT密钥不为空，也同步
 	if configFile.JWTSecret != "" {
 		configs["jwt_secret"] = configFile.JWTSecret
+	}
+
+	if configFile.RegistrationEnabled != nil {
+		configs["registration_enabled"] = fmt.Sprintf("%t", *configFile.RegistrationEnabled)
 	}
 
 	// 更新数据库配置
@@ -178,6 +187,7 @@ func main() {
 		log.Fatalf("❌ 初始化数据库失败: %v", err)
 	}
 	defer database.Close()
+	backtest.UseDatabase(database.Conn())
 
 	// 初始化加密服务
 	log.Printf("🔐 初始化加密服务...")
@@ -202,6 +212,17 @@ func main() {
 	useDefaultCoinsStr, _ := database.GetSystemConfig("use_default_coins")
 	useDefaultCoins := useDefaultCoinsStr == "true"
 	apiPortStr, _ := database.GetSystemConfig("api_server_port")
+
+	// 设置 token 过期时间
+	tokenExpirationStr, _ := database.GetSystemConfig("token_expiration_minutes")
+	tokenExpire := 1440
+	if tokenExpirationStr != "" {
+		if v, err := strconv.Atoi(tokenExpirationStr); err == nil && v > 0 {
+			tokenExpire = v
+		}
+	}
+	auth.SetTokenExpireMinutes(tokenExpire)
+	log.Printf("✓ token 过期时间已设置为 %d 分钟", tokenExpire)
 
 	// 设置JWT密钥（优先使用环境变量）
 	jwtSecret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
@@ -262,8 +283,18 @@ func main() {
 		log.Printf("✓ 已配置OI Top API")
 	}
 
-	// 创建TraderManager
+	// 创建TraderManager 与 BacktestManager
+	cfgForAI, cfgErr := config.LoadConfig("config.json")
+	if cfgErr != nil {
+		log.Printf("⚠️  加载config.json用于AI客户端失败: %v", cfgErr)
+	}
+
 	traderManager := manager.NewTraderManager()
+	mcpClient := newSharedMCPClient(cfgForAI)
+	backtestManager := backtest.NewManager(mcpClient)
+	if err := backtestManager.RestoreRuns(); err != nil {
+		log.Printf("⚠️  恢复历史回测失败: %v", err)
+	}
 
 	// 从数据库加载所有交易员到内存
 	err = traderManager.LoadTradersFromDatabase(database)
@@ -338,7 +369,7 @@ func main() {
 	}
 
 	// 创建并启动API服务器
-	apiServer := api.NewServer(traderManager, database, cryptoService, apiPort)
+	apiServer := api.NewServer(traderManager, database, cryptoService, backtestManager, apiPort)
 	go func() {
 		if err := apiServer.Start(); err != nil {
 			log.Printf("❌ API服务器错误: %v", err)
@@ -351,9 +382,6 @@ func main() {
 	// 设置优雅退出
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	// TODO: 启动数据库中配置为运行状态的交易员
-	// traderManager.StartAll()
 
 	// 等待退出信号
 	<-sigChan
@@ -384,4 +412,9 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("👋 感谢使用AI交易系统！")
+}
+
+func newSharedMCPClient(cfg *config.Config) mcp.AIClient {
+	client := mcp.New()
+	return client
 }

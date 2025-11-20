@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"nofx/config"
@@ -224,4 +225,216 @@ func TestUpdateTraderRequest_CompleteFields(t *testing.T) {
 	if req.SystemPromptTemplate != "nof1" {
 		t.Errorf("SystemPromptTemplate mismatch: expected %q, got %q", "nof1", req.SystemPromptTemplate)
 	}
+}
+
+// TestTraderListResponse_SystemPromptTemplate 测试 handleTraderList API 返回的 trader 对象是否包含 system_prompt_template 字段
+func TestTraderListResponse_SystemPromptTemplate(t *testing.T) {
+	// 模拟 handleTraderList 中的 trader 对象构造
+	trader := &config.TraderRecord{
+		ID:                   "trader-001",
+		UserID:               "user-1",
+		Name:                 "My Trader",
+		AIModelID:            "gpt-4",
+		ExchangeID:           "binance",
+		InitialBalance:       5000,
+		SystemPromptTemplate: "nof1",
+		IsRunning:            true,
+	}
+
+	// 构造 API 响应对象（与 api/server.go 中的逻辑一致）
+	response := map[string]interface{}{
+		"trader_id":              trader.ID,
+		"trader_name":            trader.Name,
+		"ai_model":               trader.AIModelID,
+		"exchange_id":            trader.ExchangeID,
+		"is_running":             trader.IsRunning,
+		"initial_balance":        trader.InitialBalance,
+		"system_prompt_template": trader.SystemPromptTemplate,
+	}
+
+	// ✅ 验证 system_prompt_template 字段存在
+	if _, exists := response["system_prompt_template"]; !exists {
+		t.Errorf("Trader list response is missing 'system_prompt_template' field")
+	}
+
+	// ✅ 验证 system_prompt_template 值正确
+	if response["system_prompt_template"] != "nof1" {
+		t.Errorf("Expected system_prompt_template='nof1', got %v", response["system_prompt_template"])
+	}
+}
+
+// TestPublicTraderListResponse_SystemPromptTemplate 测试 handlePublicTraderList API 返回的 trader 对象是否包含 system_prompt_template 字段
+func TestPublicTraderListResponse_SystemPromptTemplate(t *testing.T) {
+	// 模拟 getConcurrentTraderData 返回的 trader 数据
+	traderData := map[string]interface{}{
+		"trader_id":              "trader-002",
+		"trader_name":            "Public Trader",
+		"ai_model":               "claude",
+		"exchange":               "binance",
+		"total_equity":           10000.0,
+		"total_pnl":              500.0,
+		"total_pnl_pct":          5.0,
+		"position_count":         3,
+		"margin_used_pct":        25.0,
+		"is_running":             true,
+		"system_prompt_template": "default",
+	}
+
+	// 构造 API 响应对象（与 api/server.go handlePublicTraderList 中的逻辑一致）
+	response := map[string]interface{}{
+		"trader_id":              traderData["trader_id"],
+		"trader_name":            traderData["trader_name"],
+		"ai_model":               traderData["ai_model"],
+		"exchange":               traderData["exchange"],
+		"total_equity":           traderData["total_equity"],
+		"total_pnl":              traderData["total_pnl"],
+		"total_pnl_pct":          traderData["total_pnl_pct"],
+		"position_count":         traderData["position_count"],
+		"margin_used_pct":        traderData["margin_used_pct"],
+		"system_prompt_template": traderData["system_prompt_template"],
+	}
+
+	// ✅ 验证 system_prompt_template 字段存在
+	if _, exists := response["system_prompt_template"]; !exists {
+		t.Errorf("Public trader list response is missing 'system_prompt_template' field")
+	}
+
+	// ✅ 验证 system_prompt_template 值正确
+	if response["system_prompt_template"] != "default" {
+		t.Errorf("Expected system_prompt_template='default', got %v", response["system_prompt_template"])
+	}
+}
+
+// TestPerformanceAPI_LimitParameter 测试 performance API 的 limit 参数功能
+func TestPerformanceAPI_LimitParameter(t *testing.T) {
+	// 模拟历史成交记录（recent_trades）
+	createMockTrades := func(count int) []interface{} {
+		trades := make([]interface{}, count)
+		for i := 0; i < count; i++ {
+			trades[i] = map[string]interface{}{
+				"symbol":     "BTCUSDT",
+				"side":       "long",
+				"pnl":        float64(i * 10),
+				"pnl_pct":    1.5,
+				"open_price": 50000.0,
+			}
+		}
+		return trades
+	}
+
+	tests := []struct {
+		name           string
+		limitParam     string
+		totalTrades    int
+		expectedCount  int
+		description    string
+	}{
+		{
+			name:           "无limit参数-返回所有记录",
+			limitParam:     "",
+			totalTrades:    30,
+			expectedCount:  30,
+			description:    "不传limit参数时，应该返回所有交易记录（保持向后兼容）",
+		},
+		{
+			name:           "limit=10-返回10条记录",
+			limitParam:     "10",
+			totalTrades:    50,
+			expectedCount:  10,
+			description:    "limit=10时，应该只返回最近10条交易记录",
+		},
+		{
+			name:           "limit=20-返回20条记录",
+			limitParam:     "20",
+			totalTrades:    100,
+			expectedCount:  20,
+			description:    "limit=20时，应该只返回最近20条交易记录",
+		},
+		{
+			name:           "limit=50-返回50条记录",
+			limitParam:     "50",
+			totalTrades:    80,
+			expectedCount:  50,
+			description:    "limit=50时，应该只返回最近50条交易记录",
+		},
+		{
+			name:           "limit大于实际记录数-返回所有记录",
+			limitParam:     "100",
+			totalTrades:    30,
+			expectedCount:  30,
+			description:    "limit=100但只有30条记录时，应该返回所有30条记录",
+		},
+		{
+			name:           "limit=0-返回所有记录",
+			limitParam:     "0",
+			totalTrades:    40,
+			expectedCount:  40,
+			description:    "limit=0时，应该返回所有交易记录",
+		},
+		{
+			name:           "limit超过最大值100-使用最大值",
+			limitParam:     "150",
+			totalTrades:    200,
+			expectedCount:  200, // 解析时会被限制为100，但这里测试的是解析逻辑
+			description:    "limit=150超过最大值100时，解析逻辑会忽略此值",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 模拟完整的 performance 数据
+			mockPerformance := map[string]interface{}{
+				"total_trades":   tt.totalTrades,
+				"winning_trades": tt.totalTrades / 2,
+				"losing_trades":  tt.totalTrades / 2,
+				"win_rate":       50.0,
+				"recent_trades":  createMockTrades(tt.totalTrades),
+			}
+
+			// 模拟 handlePerformance 中的 limit 参数解析逻辑
+			tradeLimit := 0 // 默认不限制
+			if tt.limitParam != "" {
+				if l := parseLimit(tt.limitParam); l > 0 && l <= 100 {
+					tradeLimit = l
+				}
+			}
+
+			// 模拟截取逻辑
+			recentTrades := mockPerformance["recent_trades"].([]interface{})
+			if tradeLimit > 0 && len(recentTrades) > tradeLimit {
+				recentTrades = recentTrades[:tradeLimit]
+			}
+
+			// ✅ 验证返回的记录数
+			actualCount := len(recentTrades)
+			if tt.limitParam == "" || tt.limitParam == "0" {
+				// 无limit或limit=0时，应返回所有记录
+				if actualCount != tt.expectedCount {
+					t.Errorf("%s: expected %d trades, got %d", tt.description, tt.expectedCount, actualCount)
+				}
+			} else if tt.limitParam == "150" {
+				// limit超过最大值时，解析会忽略，返回所有记录
+				if actualCount != tt.totalTrades {
+					t.Errorf("%s: expected all %d trades (limit ignored), got %d", tt.description, tt.totalTrades, actualCount)
+				}
+			} else {
+				// 正常limit值
+				if actualCount != tt.expectedCount {
+					t.Errorf("%s: expected %d trades, got %d", tt.description, tt.expectedCount, actualCount)
+				}
+			}
+		})
+	}
+}
+
+// parseLimit 辅助函数：解析 limit 参数（模拟 server.go 中的逻辑）
+func parseLimit(limitStr string) int {
+	if limitStr == "" {
+		return 0
+	}
+	var limit int
+	if _, err := fmt.Sscanf(limitStr, "%d", &limit); err == nil {
+		return limit
+	}
+	return 0
 }

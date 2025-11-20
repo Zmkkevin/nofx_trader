@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+// Removed: import { useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
 import { api } from '../lib/api'
 import type {
@@ -66,7 +66,7 @@ interface AITradersPageProps {
 export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const { language } = useLanguage()
   const { user, token } = useAuth()
-  const navigate = useNavigate()
+  // Removed: const navigate = useNavigate()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showModelModal, setShowModelModal] = useState(false)
@@ -244,7 +244,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         error: '创建失败',
       })
       setShowCreateModal(false)
-      mutateTraders()
+      // Immediately refresh traders list for better UX
+      await mutateTraders()
     } catch (error) {
       console.error('Failed to create trader:', error)
       toast.error(t('createTraderFailed', language))
@@ -303,7 +304,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       })
       setShowEditModal(false)
       setEditingTrader(null)
-      mutateTraders()
+      // Immediately refresh traders list for better UX
+      await mutateTraders()
     } catch (error) {
       console.error('Failed to update trader:', error)
       toast.error(t('updateTraderFailed', language))
@@ -322,7 +324,9 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         success: '删除成功',
         error: '删除失败',
       })
-      mutateTraders()
+
+      // Immediately refresh traders list for better UX
+      await mutateTraders()
     } catch (error) {
       console.error('Failed to delete trader:', error)
       toast.error(t('deleteTraderFailed', language))
@@ -344,7 +348,9 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           error: '启动失败',
         })
       }
-      mutateTraders()
+
+      // Immediately refresh traders list to update running status
+      await mutateTraders()
     } catch (error) {
       console.error('Failed to toggle trader:', error)
       toast.error(t('operationFailed', language))
@@ -1105,7 +1111,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                         if (onTraderSelect) {
                           onTraderSelect(trader.trader_id)
                         } else {
-                          navigate(`/dashboard?trader=${trader.trader_id}`)
+                          window.location.href = `/dashboard?trader=${trader.trader_id}`
                         }
                       }}
                       className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 whitespace-nowrap"

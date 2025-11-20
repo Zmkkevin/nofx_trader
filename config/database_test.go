@@ -206,6 +206,66 @@ func TestUpdateExchange_NonEmptyValuesShouldUpdate(t *testing.T) {
 	}
 }
 
+// TestUpdateExchange_InsertShouldUseEncryptedValues 测试 INSERT 时应使用加密值
+// 这是 Bug 2: database.go:813 使用了未加密的值
+func TestUpdateExchange_InsertShouldUseEncryptedValues(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	userID := "test-user-004"
+
+	// 直接更新不存在的记录（触发 INSERT）
+	plainAPIKey := "plain-api-key-abc"
+	plainSecretKey := "plain-secret-key-def"
+	plainAsterKey := "plain-aster-key-ghi"
+
+	err := db.UpdateExchange(
+		userID,
+		"binance",
+		true,
+		plainAPIKey,
+		plainSecretKey,
+		false,
+		"",
+		"",
+		"",
+		plainAsterKey,
+	)
+	if err != nil {
+		t.Fatalf("INSERT 失败: %v", err)
+	}
+
+	// 验证数据库中存储的是加密值
+	exchanges, err := db.GetExchanges(userID)
+	if err != nil {
+		t.Fatalf("获取配置失败: %v", err)
+	}
+
+	// GetExchanges 会解密，所以我们应该看到原始值
+	if exchanges[0].APIKey != plainAPIKey {
+		t.Errorf("APIKey 解密后应该等于原始值，期望 %s，实际 %s", plainAPIKey, exchanges[0].APIKey)
+	}
+
+	// 直接查询数据库，验证存储的是加密格式
+	var storedAPIKey string
+	err = db.db.QueryRow(`SELECT api_key FROM exchanges WHERE id = ? AND user_id = ?`, "binance", userID).Scan(&storedAPIKey)
+	if err != nil {
+		t.Fatalf("查询数据库失败: %v", err)
+	}
+
+	// 🎯 关键断言：数据库中应该存储加密格式（ENC:v1:...）
+	if storedAPIKey == plainAPIKey {
+		t.Error("❌ Bug 确认：数据库中存储的是明文，应该是加密格式！")
+	}
+
+	// 如果有加密服务，验证是加密格式
+	if db.cryptoService != nil {
+		if !db.cryptoService.IsEncryptedStorageValue(storedAPIKey) {
+			t.Errorf("❌ Bug 确认：存储的值不是加密格式: %s", storedAPIKey)
+		}
+	}
+}
+
 // TestUpdateExchange_PartialUpdateShouldWork 测试部分字段更新
 func TestUpdateExchange_PartialUpdateShouldWork(t *testing.T) {
 	db, cleanup := setupTestDB(t)
@@ -658,6 +718,18 @@ func TestDataPersistenceAcrossReopen(t *testing.T) {
 		}
 		db.SetCryptoService(cryptoService)
 
+		// 创建测试用户（因为 exchanges 表有 FK 约束）
+		user := &User{
+			ID:           userID,
+			Email:        userID + "@test.com",
+			PasswordHash: "hash",
+			OTPSecret:    "",
+			OTPVerified:  false,
+		}
+		if err := db.CreateUser(user); err != nil {
+			t.Fatalf("创建用户失败: %v", err)
+		}
+
 		// 写入交易所配置
 		err = db.UpdateExchange(
 			userID,
@@ -725,6 +797,28 @@ func TestDataPersistenceAcrossReopen(t *testing.T) {
 func TestConcurrentWritesWithWAL(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
+
+	// 创建测试用户（因为 exchanges 表有 FK 约束）
+	user1 := &User{
+		ID:           "user1",
+		Email:        "user1@test.com",
+		PasswordHash: "hash1",
+		OTPSecret:    "",
+		OTPVerified:  false,
+	}
+	user2 := &User{
+		ID:           "user2",
+		Email:        "user2@test.com",
+		PasswordHash: "hash2",
+		OTPSecret:    "",
+		OTPVerified:  false,
+	}
+	if err := db.CreateUser(user1); err != nil {
+		t.Fatalf("创建user1失败: %v", err)
+	}
+	if err := db.CreateUser(user2); err != nil {
+		t.Fatalf("创建user2失败: %v", err)
+	}
 
 	// 这个测试验证多个并发写入可以成功
 	// WAL 模式下并发性能更好,但 SQLite 仍然可能出现短暂的锁

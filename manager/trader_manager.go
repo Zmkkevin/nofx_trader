@@ -452,6 +452,54 @@ func (tm *TraderManager) StartAll() {
 	}
 }
 
+// StartRunningTraders 只启动数据库中标记为运行状态的交易员
+func (tm *TraderManager) StartRunningTraders(database *config.Database) error {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	// 获取所有用户
+	userIDs, err := database.GetAllUsers()
+	if err != nil {
+		return fmt.Errorf("获取用户列表失败: %w", err)
+	}
+
+	// 收集所有应该启动的交易员
+	var runningTraders []*config.TraderRecord
+	for _, userID := range userIDs {
+		traders, err := database.GetTraders(userID)
+		if err != nil {
+			log.Printf("⚠️ 获取用户 %s 的交易员失败: %v", userID, err)
+			continue
+		}
+		for _, trader := range traders {
+			if trader.IsRunning {
+				runningTraders = append(runningTraders, trader)
+			}
+		}
+	}
+
+	if len(runningTraders) == 0 {
+		log.Println("📋 没有需要自动启动的交易员")
+		return nil
+	}
+
+	log.Printf("🚀 自动启动 %d 个标记为运行状态的交易员...", len(runningTraders))
+	for _, traderCfg := range runningTraders {
+		if t, exists := tm.traders[traderCfg.ID]; exists {
+			go func(at *trader.AutoTrader, name string) {
+				log.Printf("▶️  启动 %s...", name)
+				if err := at.Run(); err != nil {
+					log.Printf("❌ %s 运行错误: %v", name, err)
+				}
+			}(t, traderCfg.Name)
+		} else {
+			log.Printf("⚠️  交易员 %s (ID: %s) 未加载到内存，跳过", traderCfg.Name, traderCfg.ID)
+		}
+	}
+
+	return nil
+}
+
 // StopAll 停止所有trader
 func (tm *TraderManager) StopAll() {
 	tm.mu.RLock()
@@ -611,6 +659,7 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 					"position_count":  account["position_count"],
 					"margin_used_pct": account["margin_used_pct"],
 					"is_running":      status["is_running"],
+					"system_prompt_template": trader.GetSystemPromptTemplate(),
 				}
 			case err := <-errorChan:
 				// 获取账户信息失败
@@ -626,6 +675,7 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 					"position_count":  0,
 					"margin_used_pct": 0.0,
 					"is_running":      status["is_running"],
+					"system_prompt_template": trader.GetSystemPromptTemplate(),
 					"error":           "账户数据获取失败",
 				}
 			case <-ctx.Done():
@@ -642,6 +692,7 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 					"position_count":  0,
 					"margin_used_pct": 0.0,
 					"is_running":      status["is_running"],
+					"system_prompt_template": trader.GetSystemPromptTemplate(),
 					"error":           "获取超时",
 				}
 			}
@@ -1096,4 +1147,16 @@ func (tm *TraderManager) loadSingleTrader(traderCfg *config.TraderRecord, aiMode
 	tm.traders[traderCfg.ID] = at
 	log.Printf("✓ Trader '%s' (%s + %s) 已为用户加载到内存", traderCfg.Name, aiModelCfg.Provider, exchangeCfg.ID)
 	return nil
+}
+
+// RemoveTrader 从内存中移除指定的trader（不影响数据库）
+// 用于更新trader配置时强制重新加载
+func (tm *TraderManager) RemoveTrader(traderID string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if _, exists := tm.traders[traderID]; exists {
+		delete(tm.traders, traderID)
+		log.Printf("✓ Trader %s 已从内存中移除", traderID)
+	}
 }

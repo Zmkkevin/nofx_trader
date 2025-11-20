@@ -1,7 +1,6 @@
 package market
 
 import (
-	"fmt"
 	"math"
 	"testing"
 )
@@ -349,395 +348,155 @@ func TestCalculateIntradaySeries_VolumePrecision(t *testing.T) {
 	}
 }
 
-// TestCalculateBuySellPressureRatio 测试买卖压力比计算
-func TestCalculateBuySellPressureRatio(t *testing.T) {
-	// 创建测试用的K线数据
+// TestIsStaleData_NormalData tests that normal fluctuating data returns false
+func TestIsStaleData_NormalData(t *testing.T) {
 	klines := []Kline{
-		{Close: 100.0, Volume: 1000.0, TakerBuyBaseVolume: 400.0, TakerBuyQuoteVolume: 40000.0},
-		{Close: 101.0, Volume: 1500.0, TakerBuyBaseVolume: 900.0, TakerBuyQuoteVolume: 90900.0},
-		{Close: 99.0, Volume: 800.0, TakerBuyBaseVolume: 300.0, TakerBuyQuoteVolume: 29700.0},
-		{Close: 102.0, Volume: 1200.0, TakerBuyBaseVolume: 500.0, TakerBuyQuoteVolume: 51000.0},
-		{Close: 103.0, Volume: 2000.0, TakerBuyBaseVolume: 1200.0, TakerBuyQuoteVolume: 123600.0},
+		{Close: 100.0, Volume: 1000},
+		{Close: 100.5, Volume: 1200},
+		{Close: 99.8, Volume: 900},
+		{Close: 100.2, Volume: 1100},
+		{Close: 100.1, Volume: 950},
 	}
 
-	// 测试正常情况
-	ratio := calculateBuySellPressureRatio(klines, 5)
-	// 计算期望值：
-	// Taker买入成交量总和 = 40000.0 + 90900.0 + 29700.0 + 51000.0 + 123600.0 = 335200.0
-	// 总成交量 = 1000.0 + 1500.0 + 800.0 + 1200.0 + 2000.0 = 6500.0
-	// Taker卖出成交量总和 = 总成交量 * 平均价格 - Taker买入成交量总和
-	// 平均价格 = (100.0 + 101.0 + 99.0 + 102.0 + 103.0) / 5 = 101.0
-	// Taker卖出成交量总和 = 6500.0 * 101.0 - 335200.0 = 656500.0 - 335200.0 = 321300.0
-	// 比值 = 335200.0 / (335200.0 + 321300.0) = 335200.0 / 656500.0 ≈ 0.5106
-	expected := 335200.0 / 656500.0
-	if math.Abs(ratio-expected) > 0.0001 {
-		t.Errorf("Expected ratio %.4f, got %.4f", expected, ratio)
-	}
+	result := isStaleData(klines, "BTCUSDT")
 
-	// 测试K线数量不足的情况
-	ratio = calculateBuySellPressureRatio(klines[:3], 5)
-	if ratio != 0.0 {
-		t.Errorf("Expected 0.0 when klines count is less than period, got %.4f", ratio)
-	}
-
-	// 测试空K线情况
-	ratio = calculateBuySellPressureRatio([]Kline{}, 5)
-	if ratio != 0.0 {
-		t.Errorf("Expected 0.0 when klines is empty, got %.4f", ratio)
-	}
-
-	// 测试零总成交量情况
-	zeroVolumeKlines := []Kline{
-		{Close: 100.0, Volume: 0.0, TakerBuyBaseVolume: 0.0, TakerBuyQuoteVolume: 0.0},
-		{Close: 101.0, Volume: 0.0, TakerBuyBaseVolume: 0.0, TakerBuyQuoteVolume: 0.0},
-	}
-	ratio = calculateBuySellPressureRatio(zeroVolumeKlines, 2)
-	if ratio != 0.0 {
-		t.Errorf("Expected 0.0 when total volume is zero, got %.4f", ratio)
+	if result {
+		t.Error("Expected false for normal fluctuating data, got true")
 	}
 }
 
-// TestCalculateIntradaySeries_BuySellRatios 测试日内序列买卖压力比计算
-func TestCalculateIntradaySeries_BuySellRatios(t *testing.T) {
-	// 创建测试用的K线数据
+// TestIsStaleData_PriceFreezeWithZeroVolume tests that frozen price + zero volume returns true
+func TestIsStaleData_PriceFreezeWithZeroVolume(t *testing.T) {
 	klines := []Kline{
-		{Close: 100.0, Volume: 1000.0, TakerBuyBaseVolume: 400.0, TakerBuyQuoteVolume: 40000.0},
-		{Close: 101.0, Volume: 1500.0, TakerBuyBaseVolume: 900.0, TakerBuyQuoteVolume: 90900.0},
-		{Close: 99.0, Volume: 800.0, TakerBuyBaseVolume: 300.0, TakerBuyQuoteVolume: 29700.0},
-		{Close: 102.0, Volume: 1200.0, TakerBuyBaseVolume: 500.0, TakerBuyQuoteVolume: 51000.0},
-		{Close: 103.0, Volume: 2000.0, TakerBuyBaseVolume: 1200.0, TakerBuyQuoteVolume: 123600.0},
-		{Close: 104.0, Volume: 1800.0, TakerBuyBaseVolume: 1000.0, TakerBuyQuoteVolume: 104000.0},
-		{Close: 105.0, Volume: 1600.0, TakerBuyBaseVolume: 800.0, TakerBuyQuoteVolume: 84000.0},
-		{Close: 106.0, Volume: 1400.0, TakerBuyBaseVolume: 700.0, TakerBuyQuoteVolume: 74200.0},
-		{Close: 107.0, Volume: 1300.0, TakerBuyBaseVolume: 600.0, TakerBuyQuoteVolume: 65100.0},
-		{Close: 108.0, Volume: 1100.0, TakerBuyBaseVolume: 500.0, TakerBuyQuoteVolume: 54000.0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
 	}
 
-	data := calculateIntradaySeries(klines)
+	result := isStaleData(klines, "DOGEUSDT")
 
-	// 检查买卖压力比数组是否存在
-	if data.BuySellRatios == nil {
-		t.Error("BuySellRatios should not be nil")
-	}
-
-	// 检查买卖压力比数组长度是否正确（应该与Volume数组长度相同）
-	if len(data.BuySellRatios) != len(data.Volume) {
-		t.Errorf("BuySellRatios length (%d) should equal Volume length (%d)",
-			len(data.BuySellRatios), len(data.Volume))
-	}
-
-	// 检查所有买卖压力比值是否在合理范围内（0到1之间）
-	for i, ratio := range data.BuySellRatios {
-		if ratio < 0 || ratio > 1 {
-			t.Errorf("BuySellRatios[%d] = %.4f, should be between 0 and 1", i, ratio)
-		}
+	if !result {
+		t.Error("Expected true for frozen price + zero volume, got false")
 	}
 }
 
-// TestCalculateMidTermData 测试中期数据计算功能
-func TestCalculateMidTermData(t *testing.T) {
-	// 创建测试用的K线数据
+// TestIsStaleData_PriceFreezeWithVolume tests that frozen price but normal volume returns false
+func TestIsStaleData_PriceFreezeWithVolume(t *testing.T) {
 	klines := []Kline{
-		{Open: 100.0, High: 102.0, Low: 99.0, Close: 101.0, Volume: 1000.0},
-		{Open: 101.0, High: 103.0, Low: 100.0, Close: 102.0, Volume: 1100.0},
-		{Open: 102.0, High: 104.0, Low: 101.0, Close: 103.0, Volume: 1200.0},
-		{Open: 103.0, High: 105.0, Low: 102.0, Close: 104.0, Volume: 1300.0},
-		{Open: 104.0, High: 106.0, Low: 103.0, Close: 105.0, Volume: 1400.0},
-		{Open: 105.0, High: 107.0, Low: 104.0, Close: 106.0, Volume: 1500.0},
-		{Open: 106.0, High: 108.0, Low: 105.0, Close: 107.0, Volume: 1600.0},
-		{Open: 107.0, High: 109.0, Low: 106.0, Close: 108.0, Volume: 1700.0},
-		{Open: 108.0, High: 110.0, Low: 107.0, Close: 109.0, Volume: 1800.0},
-		{Open: 109.0, High: 111.0, Low: 108.0, Close: 110.0, Volume: 1900.0},
-		{Open: 110.0, High: 112.0, Low: 109.0, Close: 111.0, Volume: 2000.0},
-		{Open: 111.0, High: 113.0, Low: 110.0, Close: 112.0, Volume: 2100.0},
-		{Open: 112.0, High: 114.0, Low: 111.0, Close: 113.0, Volume: 2200.0},
-		{Open: 113.0, High: 115.0, Low: 112.0, Close: 114.0, Volume: 2300.0},
-		{Open: 114.0, High: 116.0, Low: 113.0, Close: 115.0, Volume: 2400.0},
-		{Open: 115.0, High: 117.0, Low: 114.0, Close: 116.0, Volume: 2500.0},
-		{Open: 116.0, High: 118.0, Low: 115.0, Close: 117.0, Volume: 2600.0},
-		{Open: 117.0, High: 119.0, Low: 116.0, Close: 118.0, Volume: 2700.0},
-		{Open: 118.0, High: 120.0, Low: 117.0, Close: 119.0, Volume: 2800.0},
-		{Open: 119.0, High: 121.0, Low: 118.0, Close: 120.0, Volume: 2900.0},
+		{Close: 100.0, Volume: 1000},
+		{Close: 100.0, Volume: 1200},
+		{Close: 100.0, Volume: 900},
+		{Close: 100.0, Volume: 1100},
+		{Close: 100.0, Volume: 950},
 	}
 
-	// 测试15分钟时间框架
-	data15m := calculateMidTermData(klines, "15m")
+	result := isStaleData(klines, "STABLECOIN")
 
-	// 验证返回的数据不为nil
-	if data15m == nil {
-		t.Fatal("calculateMidTermData() returned nil data for 15m timeframe")
-	}
-
-	// 验证基本字段
-	if data15m.Timeframe != "15m" {
-		t.Errorf("Timeframe = %s, want 15m", data15m.Timeframe)
-	}
-
-	// 验证EMA20存在且合理
-	if data15m.EMA20 <= 0 {
-		t.Error("EMA20 should be greater than 0")
-	}
-
-	// 验证ATR14存在且合理
-	if data15m.ATR14 <= 0 {
-		t.Error("ATR14 should be greater than 0")
-	}
-
-	// 验证成交量数据
-	if data15m.CurrentVolume <= 0 {
-		t.Error("CurrentVolume should be greater than 0")
-	}
-
-	if data15m.AverageVolume <= 0 {
-		t.Error("AverageVolume should be greater than 0")
-	}
-
-	// 验证买卖压力比
-	if data15m.BuySellRatio < 0 || data15m.BuySellRatio > 1 {
-		t.Errorf("BuySellRatio = %.4f, should be between 0 and 1", data15m.BuySellRatio)
-	}
-
-	// 验证MACD数据数组存在
-	if data15m.MACDValues == nil {
-		t.Error("MACDValues should not be nil")
-	}
-
-	if data15m.SignalValues == nil {
-		t.Error("SignalValues should not be nil")
-	}
-
-	if data15m.HistoValues == nil {
-		t.Error("HistoValues should not be nil")
-	}
-
-	// 验证RSI数据数组存在
-	if data15m.RSI7Values == nil {
-		t.Error("RSI7Values should not be nil")
-	}
-
-	if data15m.RSI14Values == nil {
-		t.Error("RSI14Values should not be nil")
-	}
-
-	// 验证斐波那契数据数组存在
-	if data15m.FibRetrace382 == nil {
-		t.Error("FibRetrace382 should not be nil")
-	}
-
-	if data15m.FibRetrace500 == nil {
-		t.Error("FibRetrace500 should not be nil")
-	}
-
-	if data15m.FibRetrace618 == nil {
-		t.Error("FibRetrace618 should not be nil")
-	}
-
-	if data15m.FibExtension1272 == nil {
-		t.Error("FibExtension1272 should not be nil")
-	}
-
-	if data15m.FibExtension1618 == nil {
-		t.Error("FibExtension1618 should not be nil")
-	}
-
-	if data15m.FibExtension2000 == nil {
-		t.Error("FibExtension2000 should not be nil")
-	}
-
-	// 测试1小时时间框架
-	data1h := calculateMidTermData(klines, "1h")
-
-	// 验证返回的数据不为nil
-	if data1h == nil {
-		t.Fatal("calculateMidTermData() returned nil data for 1h timeframe")
-	}
-
-	// 验证基本字段
-	if data1h.Timeframe != "1h" {
-		t.Errorf("Timeframe = %s, want 1h", data1h.Timeframe)
+	if result {
+		t.Error("Expected false for frozen price but normal volume (low volatility market), got true")
 	}
 }
 
-// TestCalculateLongerTermData_BuySellRatio 测试长期数据买卖压力比计算
-func TestCalculateLongerTermData_BuySellRatio(t *testing.T) {
-	// 创建测试用的K线数据
+// TestIsStaleData_InsufficientData tests that insufficient data (<5 klines) returns false
+func TestIsStaleData_InsufficientData(t *testing.T) {
 	klines := []Kline{
-		{Close: 100.0, Volume: 1000.0, TakerBuyBaseVolume: 400.0, TakerBuyQuoteVolume: 40000.0},
-		{Close: 101.0, Volume: 1500.0, TakerBuyBaseVolume: 900.0, TakerBuyQuoteVolume: 90900.0},
-		{Close: 99.0, Volume: 800.0, TakerBuyBaseVolume: 300.0, TakerBuyQuoteVolume: 29700.0},
-		{Close: 102.0, Volume: 1200.0, TakerBuyBaseVolume: 500.0, TakerBuyQuoteVolume: 51000.0},
-		{Close: 103.0, Volume: 2000.0, TakerBuyBaseVolume: 1200.0, TakerBuyQuoteVolume: 123600.0},
-		{Close: 104.0, Volume: 1800.0, TakerBuyBaseVolume: 1000.0, TakerBuyQuoteVolume: 104000.0},
-		{Close: 105.0, Volume: 1600.0, TakerBuyBaseVolume: 800.0, TakerBuyQuoteVolume: 84000.0},
-		{Close: 106.0, Volume: 1400.0, TakerBuyBaseVolume: 700.0, TakerBuyQuoteVolume: 74200.0},
-		{Close: 107.0, Volume: 1300.0, TakerBuyBaseVolume: 600.0, TakerBuyQuoteVolume: 65100.0},
-		{Close: 108.0, Volume: 1100.0, TakerBuyBaseVolume: 500.0, TakerBuyQuoteVolume: 54000.0},
-		{Close: 109.0, Volume: 1200.0, TakerBuyBaseVolume: 600.0, TakerBuyQuoteVolume: 65400.0},
-		{Close: 110.0, Volume: 1300.0, TakerBuyBaseVolume: 700.0, TakerBuyQuoteVolume: 77000.0},
-		{Close: 111.0, Volume: 1400.0, TakerBuyBaseVolume: 800.0, TakerBuyQuoteVolume: 88800.0},
-		{Close: 112.0, Volume: 1500.0, TakerBuyBaseVolume: 900.0, TakerBuyQuoteVolume: 100800.0},
-		{Close: 113.0, Volume: 1600.0, TakerBuyBaseVolume: 1000.0, TakerBuyQuoteVolume: 113600.0},
-		{Close: 114.0, Volume: 1700.0, TakerBuyBaseVolume: 1100.0, TakerBuyQuoteVolume: 127400.0},
-		{Close: 115.0, Volume: 1800.0, TakerBuyBaseVolume: 1200.0, TakerBuyQuoteVolume: 141600.0},
-		{Close: 116.0, Volume: 1900.0, TakerBuyBaseVolume: 1300.0, TakerBuyQuoteVolume: 156400.0},
-		{Close: 117.0, Volume: 2000.0, TakerBuyBaseVolume: 1400.0, TakerBuyQuoteVolume: 171800.0},
-		{Close: 118.0, Volume: 2100.0, TakerBuyBaseVolume: 1500.0, TakerBuyQuoteVolume: 187800.0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
 	}
 
-	data := calculateLongerTermData(klines)
+	result := isStaleData(klines, "BTCUSDT")
 
-	// 检查买卖压力比值是否存在
-	if data.BuySellRatio <= 0 {
-		t.Error("BuySellRatio should be greater than 0")
-	}
-
-	// 检查买卖压力比值是否在合理范围内（0到1之间）
-	if data.BuySellRatio < 0 || data.BuySellRatio > 1 {
-		t.Errorf("BuySellRatio = %.4f, should be between 0 and 1", data.BuySellRatio)
+	if result {
+		t.Error("Expected false for insufficient data (<5 klines), got true")
 	}
 }
 
-// TestGetWith15mAnd1hTimeframes 测试Get方法使用15分钟和1小时时间框架数据
-func TestGetWith15mAnd1hTimeframes(t *testing.T) {
-	// 创建模拟的WSMonitor实例
-	mockWSMonitor := &MockWSMonitor{
-		klines3m:  generateTestKlinesWithTimeframe(20, "3m"),
-		klines15m: generateTestKlinesWithTimeframe(10, "15m"),
-		klines1h:  generateTestKlinesWithTimeframe(10, "1h"),
-		klines4h:  generateTestKlinesWithTimeframe(5, "4h"),
+// TestIsStaleData_ExactlyFiveKlines tests edge case with exactly 5 klines
+func TestIsStaleData_ExactlyFiveKlines(t *testing.T) {
+	// Stale case: exactly 5 frozen klines with zero volume
+	staleKlines := []Kline{
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
+		{Close: 100.0, Volume: 0},
 	}
 
-	// 保存原始的WSMonitorCli
-	originalWSMonitorCli := WSMonitorCli
-	WSMonitorCli = mockWSMonitor
-	defer func() {
-		WSMonitorCli = originalWSMonitorCli // 恢复原始值
-	}()
-
-	// 测试获取数据
-	data, err := Get("BTCUSDT")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
+	result := isStaleData(staleKlines, "TESTUSDT")
+	if !result {
+		t.Error("Expected true for exactly 5 frozen klines with zero volume, got false")
 	}
 
-	// 验证返回的数据不为nil
-	if data == nil {
-		t.Fatal("Get() returned nil data")
+	// Normal case: exactly 5 klines with fluctuation
+	normalKlines := []Kline{
+		{Close: 100.0, Volume: 1000},
+		{Close: 100.1, Volume: 1100},
+		{Close: 99.9, Volume: 900},
+		{Close: 100.0, Volume: 1000},
+		{Close: 100.05, Volume: 950},
 	}
 
-	// 验证所有价格变化字段都存在且合理
-	if math.IsNaN(data.PriceChange15m) {
-		t.Error("PriceChange15m should not be NaN")
-	}
-
-	if math.IsNaN(data.PriceChange1h) {
-		t.Error("PriceChange1h should not be NaN")
-	}
-
-	if math.IsNaN(data.PriceChange4h) {
-		t.Error("PriceChange4h should not be NaN")
-	}
-
-	// 验证价格变化值在合理范围内（-100到100之间）
-	if data.PriceChange15m < -100 || data.PriceChange15m > 100 {
-		t.Errorf("PriceChange15m = %.2f, should be between -100 and 100", data.PriceChange15m)
-	}
-
-	if data.PriceChange1h < -100 || data.PriceChange1h > 100 {
-		t.Errorf("PriceChange1h = %.2f, should be between -100 and 100", data.PriceChange1h)
-	}
-
-	if data.PriceChange4h < -100 || data.PriceChange4h > 100 {
-		t.Errorf("PriceChange4h = %.2f, should be between -100 and 100", data.PriceChange4h)
+	result = isStaleData(normalKlines, "TESTUSDT")
+	if result {
+		t.Error("Expected false for exactly 5 normal klines, got true")
 	}
 }
 
-// MockWSMonitor 模拟WSMonitor实现
-type MockWSMonitor struct {
-	klines3m  []Kline
-	klines15m []Kline
-	klines1h  []Kline
-	klines4h  []Kline
-}
+// TestIsStaleData_WithinTolerance tests price changes within tolerance (0.01%)
+func TestIsStaleData_WithinTolerance(t *testing.T) {
+	// Price changes within 0.01% tolerance should be treated as frozen
+	basePrice := 10000.0
+	tolerance := 0.0001                        // 0.01%
+	smallChange := basePrice * tolerance * 0.5 // Half of tolerance
 
-// GetCurrentKlines 模拟获取K线数据的方法
-func (m *MockWSMonitor) GetCurrentKlines(symbol string, timeframe string) ([]Kline, error) {
-	switch timeframe {
-	case "3m":
-		return m.klines3m, nil
-	case "15m":
-		return m.klines15m, nil
-	case "1h":
-		return m.klines1h, nil
-	case "4h":
-		return m.klines4h, nil
-	default:
-		return nil, fmt.Errorf("unsupported timeframe: %s", timeframe)
+	klines := []Kline{
+		{Close: basePrice, Volume: 1000},
+		{Close: basePrice + smallChange, Volume: 1000},
+		{Close: basePrice - smallChange, Volume: 1000},
+		{Close: basePrice, Volume: 1000},
+		{Close: basePrice + smallChange, Volume: 1000},
+	}
+
+	result := isStaleData(klines, "BTCUSDT")
+
+	// Should return false because there's normal volume despite tiny price changes
+	if result {
+		t.Error("Expected false for price within tolerance but with volume, got true")
 	}
 }
 
-// generateTestKlinesWithTimeframe 生成指定时间框架的测试K线数据
-func generateTestKlinesWithTimeframe(count int, timeframe string) []Kline {
-	klines := make([]Kline, count)
-
-	// 根据时间框架设置时间间隔（毫秒）
-	interval := getTimeframeInterval(timeframe)
-
-	for i := 0; i < count; i++ {
-		// 生成模拟的价格数据，有一定的波动
-		basePrice := 100.0
-		variance := float64(i%10) * 0.5
-		open := basePrice + variance
-		high := open + 1.0
-		low := open - 0.5
-		close := open + 0.3
-		volume := 1000.0 + float64(i*100)
-
-		klines[i] = Kline{
-			OpenTime:  int64(i * interval),
-			Open:      open,
-			High:      high,
-			Low:       low,
-			Close:     close,
-			Volume:    volume,
-			CloseTime: int64((i+1)*interval - 1),
-		}
+// TestIsStaleData_MixedScenario tests realistic scenario with some history before freeze
+func TestIsStaleData_MixedScenario(t *testing.T) {
+	// Simulate: normal trading → suddenly freezes
+	klines := []Kline{
+		{Close: 100.0, Volume: 1000}, // Normal
+		{Close: 100.5, Volume: 1200}, // Normal
+		{Close: 100.2, Volume: 1100}, // Normal
+		{Close: 50.0, Volume: 0},     // Freeze starts
+		{Close: 50.0, Volume: 0},     // Frozen
+		{Close: 50.0, Volume: 0},     // Frozen
+		{Close: 50.0, Volume: 0},     // Frozen
+		{Close: 50.0, Volume: 0},     // Frozen (last 5 are all frozen)
 	}
-	return klines
+
+	result := isStaleData(klines, "DOGEUSDT")
+
+	// Should detect stale data based on last 5 klines
+	if !result {
+		t.Error("Expected true for frozen last 5 klines with zero volume, got false")
+	}
 }
 
-// getTimeframeInterval 获取时间框架对应的时间间隔（毫秒）
-func getTimeframeInterval(timeframe string) int {
-	switch timeframe {
-	case "1m":
-		return 60000
-	case "3m":
-		return 180000
-	case "5m":
-		return 300000
-	case "15m":
-		return 900000
-	case "30m":
-		return 1800000
-	case "1h":
-		return 3600000
-	case "2h":
-		return 7200000
-	case "4h":
-		return 14400000
-	case "6h":
-		return 21600000
-	case "8h":
-		return 28800000
-	case "12h":
-		return 43200000
-	case "1d":
-		return 86400000
-	case "3d":
-		return 259200000
-	case "1w":
-		return 604800000
-	default:
-		return 180000 // 默认3分钟
+// TestIsStaleData_EmptyKlines tests edge case with empty slice
+func TestIsStaleData_EmptyKlines(t *testing.T) {
+	klines := []Kline{}
+
+	result := isStaleData(klines, "BTCUSDT")
+
+	if result {
+		t.Error("Expected false for empty klines, got true")
 	}
 }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+// Removed: import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 import { t } from '../i18n/translations'
@@ -9,11 +9,12 @@ import { copyWithToast } from '../lib/clipboard'
 import { Eye, EyeOff } from 'lucide-react'
 import { Input } from './ui/input'
 import PasswordChecklist from 'react-password-checklist'
+import { RegistrationDisabled } from './RegistrationDisabled'
 
 export function RegisterPage() {
   const { language } = useLanguage()
   const { register, completeRegistration } = useAuth()
-  const navigate = useNavigate()
+  // Removed: const navigate = useNavigate()
   const [step, setStep] = useState<'register' | 'setup-otp' | 'verify-otp'>(
     'register'
   )
@@ -22,6 +23,7 @@ export function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [betaCode, setBetaCode] = useState('')
   const [betaMode, setBetaMode] = useState(false)
+  const [registrationEnabled, setRegistrationEnabled] = useState(true)
   const [otpCode, setOtpCode] = useState('')
   const [userID, setUserID] = useState('')
   const [otpSecret, setOtpSecret] = useState('')
@@ -33,23 +35,28 @@ export function RegisterPage() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
 
   useEffect(() => {
-    // 获取系统配置，检查是否开启内测模式
+    // 获取系统配置，检查是否开启内测模式和注册功能
     getSystemConfig()
       .then((config) => {
         setBetaMode(config.beta_mode || false)
+        setRegistrationEnabled(config.registration_enabled !== false)
       })
       .catch((err) => {
         console.error('Failed to fetch system config:', err)
       })
   }, [])
 
+  // 如果注册功能被禁用，显示注册已关闭页面
+  if (!registrationEnabled) {
+    return <RegistrationDisabled />
+  }
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
 
-    // 客户端强校验：长度>=8，包含大小写、数字、特殊字符，且两次一致
-    const strong = isStrongPassword(password)
-    if (!strong || password !== confirmPassword) {
+    // 使用 PasswordChecklist 的校验结果
+    if (!passwordValid) {
       setError(t('passwordNotMeetRequirements', language))
       return
     }
@@ -552,7 +559,7 @@ export function RegisterPage() {
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
               已有账户？{' '}
               <button
-                onClick={() => navigate('/login')}
+                onClick={() => window.location.href = '/login'}
                 className="font-semibold hover:underline transition-colors"
                 style={{ color: 'var(--brand-yellow)' }}
               >
@@ -564,14 +571,4 @@ export function RegisterPage() {
       </div>
     </div>
   )
-}
-
-// 本地密码强度校验（与 UI 规则一致）
-function isStrongPassword(pwd: string): boolean {
-  if (!pwd || pwd.length < 8) return false
-  const hasUpper = /[A-Z]/.test(pwd)
-  const hasLower = /[a-z]/.test(pwd)
-  const hasNumber = /\d/.test(pwd)
-  const hasSpecial = /[@#$%!&*?]/.test(pwd)
-  return hasUpper && hasLower && hasNumber && hasSpecial
 }

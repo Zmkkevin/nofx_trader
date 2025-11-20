@@ -31,7 +31,7 @@ type AutoTraderTestSuite struct {
 	// Mock 依赖
 	mockTrader *MockTrader
 	mockDB     *MockDatabase
-	mockLogger *logger.DecisionLogger
+	mockLogger logger.IDecisionLogger
 
 	// gomonkey patches
 	patches *gomonkey.Patches
@@ -103,6 +103,9 @@ func (s *AutoTraderTestSuite) SetupTest() {
 		callCount:             0,
 		isRunning:             false,
 		positionFirstSeenTime: make(map[string]int64),
+		lastPositions:         make(map[string]decision.PositionInfo),
+		positionStopLoss:      make(map[string]float64),
+		positionTakeProfit:    make(map[string]float64),
 		stopMonitorCh:         make(chan struct{}),
 		peakPnLCache:          make(map[string]float64),
 		lastBalanceSyncTime:   time.Now(),
@@ -976,13 +979,17 @@ func (m *MockDatabase) UpdateTraderInitialBalance(userID, traderID string, newBa
 
 // MockTrader 增强版（添加错误控制）
 type MockTrader struct {
-	balance              map[string]interface{}
-	positions            []map[string]interface{}
-	shouldFailBalance    bool
-	shouldFailPositions  bool
-	shouldFailOpenLong   bool
-	shouldFailCloseLong  bool
-	shouldFailCloseShort bool
+	balance                   map[string]interface{}
+	positions                 []map[string]interface{}
+	shouldFailBalance         bool
+	shouldFailPositions       bool
+	shouldFailOpenLong        bool
+	shouldFailCloseLong       bool
+	shouldFailCloseShort      bool
+	cancelStopLossCallCount   int
+	setStopLossCallCount      int
+	cancelTakeProfitCallCount int
+	setTakeProfitCallCount    int
 }
 
 func (m *MockTrader) GetBalance() (map[string]interface{}, error) {
@@ -1059,18 +1066,22 @@ func (m *MockTrader) GetMarketPrice(symbol string) (float64, error) {
 }
 
 func (m *MockTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
+	m.setStopLossCallCount++
 	return nil
 }
 
 func (m *MockTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
+	m.setTakeProfitCallCount++
 	return nil
 }
 
 func (m *MockTrader) CancelStopLossOrders(symbol string) error {
+	m.cancelStopLossCallCount++
 	return nil
 }
 
 func (m *MockTrader) CancelTakeProfitOrders(symbol string) error {
+	m.cancelTakeProfitCallCount++
 	return nil
 }
 
@@ -1084,6 +1095,10 @@ func (m *MockTrader) CancelStopOrders(symbol string) error {
 
 func (m *MockTrader) FormatQuantity(symbol string, quantity float64) (string, error) {
 	return fmt.Sprintf("%.4f", quantity), nil
+}
+
+func (m *MockTrader) GetRecentFills(symbol string, startTime int64, endTime int64) ([]map[string]interface{}, error) {
+	return []map[string]interface{}{}, nil
 }
 
 // ============================================================
@@ -1208,5 +1223,417 @@ func TestCalculatePnLPercentage_RealWorldScenarios(t *testing.T) {
 		if math.Abs(result-expected) > 0.0001 {
 			t.Errorf("SOL场景: got %v, want %v", result, expected)
 		}
+	})
+}
+
+// ============================================================
+// GetPositions 盈亏百分比计算测试 - Issue #8 修复验证
+// ============================================================
+
+// TestGetPositions_UnrealizedPnLPercentageStability 测试未实现盈亏百分比的稳定性
+// 验证修复 Issue #8：盈亏百分比应该基于开仓价计算保证金，而不是当前价
+func (s *AutoTraderTestSuite) TestGetPositions_UnrealizedPnLPercentageStability() {
+	tests := []struct {
+		name                    string
+		entryPrice              float64
+		markPrice               float64
+		quantity                float64
+		leverage                float64
+		unrealizedPnl           float64
+		expectedMarginUsed      float64
+		expectedPnlPct          float64
+		description             string
+	}{
+		{
+			name:               "价格上涨_百分比应稳定_基于开仓价",
+			entryPrice:         50000.0,
+			markPrice:          51000.0, // 价格上涨了 2%
+			quantity:           0.1,
+			leverage:           10.0,
+			unrealizedPnl:      100.0,
+			expectedMarginUsed: 500.0,  // 保证金 = 0.1 * 50000 / 10 = 500 (基于开仓价)
+			expectedPnlPct:     20.0,   // 100 / 500 * 100 = 20%
+			description:        "当价格上涨时，保证金应该基于开仓价(50000)而不是当前价(51000)",
+		},
+		{
+			name:               "价格下跌_百分比应稳定_基于开仓价",
+			entryPrice:         50000.0,
+			markPrice:          49000.0, // 价格下跌了 2%
+			quantity:           0.1,
+			leverage:           10.0,
+			unrealizedPnl:      -100.0,
+			expectedMarginUsed: 500.0,  // 保证金 = 0.1 * 50000 / 10 = 500 (基于开仓价)
+			expectedPnlPct:     -20.0,  // -100 / 500 * 100 = -20%
+			description:        "当价格下跌时，保证金应该基于开仓价(50000)而不是当前价(49000)",
+		},
+		{
+			name:               "价格大幅上涨_验证百分比不受当前价影响",
+			entryPrice:         50000.0,
+			markPrice:          55000.0, // 价格上涨了 10%
+			quantity:           0.1,
+			leverage:           10.0,
+			unrealizedPnl:      500.0,
+			expectedMarginUsed: 500.0,   // 保证金 = 0.1 * 50000 / 10 = 500 (不是 0.1 * 55000 / 10 = 550)
+			expectedPnlPct:     100.0,   // 500 / 500 * 100 = 100%
+			description:        "即使价格大幅上涨，保证金也应该固定在开仓价计算值",
+		},
+		{
+			name:               "高杠杆场景_20倍杠杆",
+			entryPrice:         3000.0,
+			markPrice:          3100.0,
+			quantity:           1.0,
+			leverage:           20.0,
+			unrealizedPnl:      100.0,
+			expectedMarginUsed: 150.0,  // 保证金 = 1.0 * 3000 / 20 = 150
+			expectedPnlPct:     66.67,  // 100 / 150 * 100 = 66.67%
+			description:        "高杠杆下，保证金计算应该基于开仓价",
+		},
+		{
+			name:               "价格不变_盈亏为0",
+			entryPrice:         50000.0,
+			markPrice:          50000.0,
+			quantity:           0.1,
+			leverage:           10.0,
+			unrealizedPnl:      0.0,
+			expectedMarginUsed: 500.0,
+			expectedPnlPct:     0.0,
+			description:        "价格不变时，盈亏和百分比都应该为0",
+		},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			// 设置 mock 持仓数据
+			s.mockTrader.positions = []map[string]interface{}{
+				{
+					"symbol":           "BTCUSDT",
+					"side":             "long",
+					"entryPrice":       tt.entryPrice,
+					"markPrice":        tt.markPrice,
+					"positionAmt":      tt.quantity,
+					"unRealizedProfit": tt.unrealizedPnl,
+					"liquidationPrice": 45000.0,
+					"leverage":         tt.leverage,
+				},
+			}
+
+			// 调用 GetPositions
+			positions, err := s.autoTrader.GetPositions()
+
+			s.NoError(err, tt.description)
+			s.Require().Equal(1, len(positions), "应该有1个持仓")
+
+			pos := positions[0]
+
+			// 验证保证金计算（关键：应该基于 entryPrice）
+			actualMarginUsed := pos["margin_used"].(float64)
+			s.InDelta(tt.expectedMarginUsed, actualMarginUsed, 0.01,
+				"保证金应该基于开仓价(%v)计算，而不是当前价(%v). %s",
+				tt.entryPrice, tt.markPrice, tt.description)
+
+			// 验证盈亏百分比
+			actualPnlPct := pos["unrealized_pnl_pct"].(float64)
+			s.InDelta(tt.expectedPnlPct, actualPnlPct, 0.01,
+				"盈亏百分比应该是 %v / %v * 100 = %v%%. %s",
+				tt.unrealizedPnl, tt.expectedMarginUsed, tt.expectedPnlPct, tt.description)
+
+			// 额外验证：盈亏百分比应该等于 unrealizedPnl / marginUsed * 100
+			expectedCalculatedPct := (tt.unrealizedPnl / tt.expectedMarginUsed) * 100
+			s.InDelta(expectedCalculatedPct, actualPnlPct, 0.01,
+				"盈亏百分比计算公式验证失败")
+		})
+	}
+}
+
+// TestGetPositions_MarginCalculationRegression 回归测试：验证保证金计算不使用 markPrice
+func (s *AutoTraderTestSuite) TestGetPositions_MarginCalculationRegression() {
+	s.Run("Issue#8_回归测试_保证金应使用entryPrice", func() {
+		// 模拟 Issue #8 的场景：
+		// 持仓价格波动时，盈亏百分比不应该随着价格波动而变化（当未实现盈亏不变时）
+
+		entryPrice := 50000.0
+		quantity := 0.1
+		leverage := 10.0
+		unrealizedPnl := 100.0 // 固定盈亏
+
+		// 测试不同的市场价格
+		testPrices := []float64{49000.0, 50000.0, 51000.0, 52000.0, 55000.0}
+
+		var pnlPercentages []float64
+
+		for _, markPrice := range testPrices {
+			s.mockTrader.positions = []map[string]interface{}{
+				{
+					"symbol":           "BTCUSDT",
+					"side":             "long",
+					"entryPrice":       entryPrice,
+					"markPrice":        markPrice,
+					"positionAmt":      quantity,
+					"unRealizedProfit": unrealizedPnl,
+					"liquidationPrice": 45000.0,
+					"leverage":         leverage,
+				},
+			}
+
+			positions, err := s.autoTrader.GetPositions()
+			s.NoError(err)
+			s.Require().Equal(1, len(positions))
+
+			pnlPct := positions[0]["unrealized_pnl_pct"].(float64)
+			pnlPercentages = append(pnlPercentages, pnlPct)
+		}
+
+		// 验证：所有的盈亏百分比应该相同（因为未实现盈亏相同，保证金基于开仓价固定）
+		expectedPnlPct := 20.0 // 100 / (0.1 * 50000 / 10) * 100 = 20%
+
+		for i, pnlPct := range pnlPercentages {
+			s.InDelta(expectedPnlPct, pnlPct, 0.01,
+				"当市场价=%v时，盈亏百分比应该稳定在%v%%，但实际是%v%%",
+				testPrices[i], expectedPnlPct, pnlPct)
+		}
+
+		// 验证所有百分比之间的差异应该接近0
+		for i := 1; i < len(pnlPercentages); i++ {
+			diff := math.Abs(pnlPercentages[i] - pnlPercentages[0])
+			s.Less(diff, 0.01,
+				"不同市场价下的盈亏百分比应该相同，但价格从%v到%v时，百分比从%v变为%v",
+				testPrices[0], testPrices[i], pnlPercentages[0], pnlPercentages[i])
+		}
+	})
+}
+
+// TestUpdateStopLossShouldUpdateMemory 测试 update_stop_loss 应该更新内存中的止损价格
+func (s *AutoTraderTestSuite) TestUpdateStopLossShouldUpdateMemory() {
+	s.Run("执行update_stop_loss后应该更新positionStopLoss map", func() {
+		// 准备：模拟已有持仓
+		symbol := "BTCUSDT"
+		posKey := "BTCUSDT_short"
+
+		// 初始化止损价格为旧值
+		s.autoTrader.positionStopLoss[posKey] = 95000.0
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "short",
+				"positionAmt": -0.1,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 94500.0,
+			}, nil
+		})
+
+		// 执行 update_stop_loss
+		newStopLoss := 94571.0
+		decision := &decision.Decision{
+			Symbol:      symbol,
+			Action:      "update_stop_loss",
+			NewStopLoss: newStopLoss,
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateStopLossWithRecord(decision, actionRecord)
+
+		// 验证
+		s.NoError(err, "update_stop_loss应该成功")
+
+		// 🎯 关键验证：内存中的止损价格应该已更新
+		actualStopLoss := s.autoTrader.positionStopLoss[posKey]
+		s.Equal(newStopLoss, actualStopLoss,
+			"executeUpdateStopLoss后，positionStopLoss[%s]应该更新为%.2f，但实际是%.2f",
+			posKey, newStopLoss, actualStopLoss)
+	})
+}
+
+// TestUpdateTakeProfitShouldUpdateMemory 测试 update_take_profit 应该更新内存中的止盈价格
+func (s *AutoTraderTestSuite) TestUpdateTakeProfitShouldUpdateMemory() {
+	s.Run("执行update_take_profit后应该更新positionTakeProfit map", func() {
+		// 准备：模拟已有持仓
+		symbol := "BTCUSDT"
+		posKey := "BTCUSDT_short"
+
+		// 初始化止盈价格为旧值
+		s.autoTrader.positionTakeProfit[posKey] = 92000.0
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "short",
+				"positionAmt": -0.1,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 94500.0,
+			}, nil
+		})
+
+		// 执行 update_take_profit
+		newTakeProfit := 93000.0
+		decision := &decision.Decision{
+			Symbol:        symbol,
+			Action:        "update_take_profit",
+			NewTakeProfit: newTakeProfit,
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateTakeProfitWithRecord(decision, actionRecord)
+
+		// 验证
+		s.NoError(err, "update_take_profit应该成功")
+
+		// 🎯 关键验证：内存中的止盈价格应该已更新
+		actualTakeProfit := s.autoTrader.positionTakeProfit[posKey]
+		s.Equal(newTakeProfit, actualTakeProfit,
+			"executeUpdateTakeProfit后，positionTakeProfit[%s]应该更新为%.2f，但实际是%.2f",
+			posKey, newTakeProfit, actualTakeProfit)
+	})
+}
+
+// TestUpdateStopLossSkipDuplicate 测试重复的止损更新应该被跳过
+func (s *AutoTraderTestSuite) TestUpdateStopLossSkipDuplicate() {
+	s.Run("新止损价格与当前止损相同时应该跳过操作", func() {
+		symbol := "BTCUSDT"
+		posKey := "BTCUSDT_short"
+		currentStopLoss := 95003.0
+
+		// 初始化：当前止损价格为 95003.0
+		s.autoTrader.positionStopLoss[posKey] = currentStopLoss
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "short",
+				"positionAmt": -0.1,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 93626.0,
+			}, nil
+		})
+
+		// 执行 update_stop_loss，设置相同的止损价格 95003.0
+		decision := &decision.Decision{
+			Symbol:      symbol,
+			Action:      "update_stop_loss",
+			NewStopLoss: 95003.0, // 与当前止损相同
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateStopLossWithRecord(decision, actionRecord)
+
+		// 验证：应该成功返回（没有错误）
+		s.NoError(err, "重复的止损更新应该直接返回成功")
+
+		// 验证：CancelStopLossOrders 不应该被调用
+		s.Equal(0, s.mockTrader.cancelStopLossCallCount,
+			"重复止损更新时不应该调用CancelStopLossOrders")
+
+		// 验证：SetStopLoss 不应该被调用
+		s.Equal(0, s.mockTrader.setStopLossCallCount,
+			"重复止损更新时不应该调用SetStopLoss")
+	})
+
+	s.Run("新止损价格与当前止损差异小于0.01时应该跳过", func() {
+		symbol := "ETHUSDT"
+		posKey := "ETHUSDT_long"
+		currentStopLoss := 3000.00
+
+		// 初始化：当前止损价格为 3000.00
+		s.autoTrader.positionStopLoss[posKey] = currentStopLoss
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "long",
+				"positionAmt": 1.0,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 3100.0,
+			}, nil
+		})
+
+		// 执行 update_stop_loss，设置 3000.005（差异 < 0.01）
+		decision := &decision.Decision{
+			Symbol:      symbol,
+			Action:      "update_stop_loss",
+			NewStopLoss: 3000.005,
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateStopLossWithRecord(decision, actionRecord)
+
+		// 验证：应该跳过操作
+		s.NoError(err)
+		s.Equal(0, s.mockTrader.setStopLossCallCount, "差异<0.01时不应该调用SetStopLoss")
+	})
+}
+
+// TestUpdateTakeProfitSkipDuplicate 测试重复的止盈更新应该被跳过
+func (s *AutoTraderTestSuite) TestUpdateTakeProfitSkipDuplicate() {
+	s.Run("新止盈价格与当前止盈相同时应该跳过操作", func() {
+		symbol := "BTCUSDT"
+		posKey := "BTCUSDT_long"
+		currentTakeProfit := 100000.0
+
+		// 初始化：当前止盈价格为 100000.0
+		s.autoTrader.positionTakeProfit[posKey] = currentTakeProfit
+
+		// 设置 MockTrader 返回的持仓数据
+		s.mockTrader.positions = []map[string]interface{}{
+			{
+				"symbol":      symbol,
+				"side":        "long",
+				"positionAmt": 0.1,
+			},
+		}
+
+		// Mock market.Get
+		s.patches.ApplyFunc(market.Get, func(sym string) (*market.Data, error) {
+			return &market.Data{
+				Symbol:       sym,
+				CurrentPrice: 95000.0,
+			}, nil
+		})
+
+		// 执行 update_take_profit，设置相同的止盈价格
+		decision := &decision.Decision{
+			Symbol:        symbol,
+			Action:        "update_take_profit",
+			NewTakeProfit: 100000.0, // 与当前止盈相同
+		}
+		actionRecord := &logger.DecisionAction{}
+
+		err := s.autoTrader.executeUpdateTakeProfitWithRecord(decision, actionRecord)
+
+		// 验证：应该成功返回
+		s.NoError(err, "重复的止盈更新应该直接返回成功")
+
+		// 验证：不应该调用交易所API
+		s.Equal(0, s.mockTrader.cancelTakeProfitCallCount,
+			"重复止盈更新时不应该调用CancelTakeProfitOrders")
+		s.Equal(0, s.mockTrader.setTakeProfitCallCount,
+			"重复止盈更新时不应该调用SetTakeProfit")
 	})
 }

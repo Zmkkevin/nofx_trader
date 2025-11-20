@@ -50,4 +50,17 @@ type Trader interface {
 
 	// FormatQuantity 格式化数量到正确的精度
 	FormatQuantity(symbol string, quantity float64) (string, error)
+
+	// GetRecentFills 获取最近的成交记录
+	// symbol: 交易对符号 (例如 "BTCUSDT")
+	// startTime: 开始时间（毫秒时间戳）
+	// endTime: 结束时间（毫秒时间戳，0表示当前时间）
+	// 返回成交记录列表，每条记录包含:
+	//   - symbol: 交易对
+	//   - side: "Buy" 或 "Sell"
+	//   - price: 成交价格
+	//   - quantity: 成交数量
+	//   - timestamp: 成交时间（毫秒时间戳）
+	//   - fee: 手续费（可选）
+	GetRecentFills(symbol string, startTime int64, endTime int64) ([]map[string]interface{}, error)
 }

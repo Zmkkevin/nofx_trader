@@ -39,6 +39,10 @@ export function LandingPage() {
             window.location.href = '/traders'
           } else if (page === 'trader') {
             window.location.href = '/dashboard'
+          } else if (page === 'backtest') {
+            window.location.href = '/backtest'
+          } else if (page === 'faq') {
+            window.location.href = '/faq'
           }
         }}
       />

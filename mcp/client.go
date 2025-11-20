@@ -13,18 +13,17 @@ import (
 	"time"
 )
 
-// Provider AI提供商类型
-type Provider string
-
 const (
-	ProviderDeepSeek Provider = "deepseek"
-	ProviderQwen     Provider = "qwen"
-	ProviderCustom   Provider = "custom"
+	ProviderCustom = "custom"
+)
+
+var (
+	DefaultTimeout = 120 * time.Second
 )
 
 // Client AI API配置
 type Client struct {
-	Provider   Provider
+	Provider   string
 	APIKey     string
 	BaseURL    string
 	Model      string
@@ -33,7 +32,7 @@ type Client struct {
 	MaxTokens  int  // AI响应的最大token数
 }
 
-func New() *Client {
+func New() AIClient {
 	// 从环境变量读取 MaxTokens，默认 2000
 	maxTokens := 2000
 	if envMaxTokens := os.Getenv("AI_MAX_TOKENS"); envMaxTokens != "" {
@@ -48,65 +47,15 @@ func New() *Client {
 	// 默认配置
 	return &Client{
 		Provider:  ProviderDeepSeek,
-		BaseURL:   "https://api.deepseek.com/v1",
-		Model:     "deepseek-chat",
-		Timeout:   120 * time.Second, // 增加到120秒，因为AI需要分析大量数据
+		BaseURL:   DefaultDeepSeekBaseURL,
+		Model:     DefaultDeepSeekModel,
+		Timeout:   DefaultTimeout,
 		MaxTokens: maxTokens,
 	}
 }
 
-// SetDeepSeekAPIKey 设置DeepSeek API密钥
-// customURL 为空时使用默认URL，customModel 为空时使用默认模型
-func (client *Client) SetDeepSeekAPIKey(apiKey string, customURL string, customModel string) {
-	client.Provider = ProviderDeepSeek
-	client.APIKey = apiKey
-	if customURL != "" {
-		client.BaseURL = customURL
-		log.Printf("🔧 [MCP] DeepSeek 使用自定义 BaseURL: %s", customURL)
-	} else {
-		client.BaseURL = "https://api.deepseek.com/v1"
-		log.Printf("🔧 [MCP] DeepSeek 使用默认 BaseURL: %s", client.BaseURL)
-	}
-	if customModel != "" {
-		client.Model = customModel
-		log.Printf("🔧 [MCP] DeepSeek 使用自定义 Model: %s", customModel)
-	} else {
-		client.Model = "deepseek-chat"
-		log.Printf("🔧 [MCP] DeepSeek 使用默认 Model: %s", client.Model)
-	}
-	// 打印 API Key 的前后各4位用于验证
-	if len(apiKey) > 8 {
-		log.Printf("🔧 [MCP] DeepSeek API Key: %s...%s", apiKey[:4], apiKey[len(apiKey)-4:])
-	}
-}
-
-// SetQwenAPIKey 设置阿里云Qwen API密钥
-// customURL 为空时使用默认URL，customModel 为空时使用默认模型
-func (client *Client) SetQwenAPIKey(apiKey string, customURL string, customModel string) {
-	client.Provider = ProviderQwen
-	client.APIKey = apiKey
-	if customURL != "" {
-		client.BaseURL = customURL
-		log.Printf("🔧 [MCP] Qwen 使用自定义 BaseURL: %s", customURL)
-	} else {
-		client.BaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-		log.Printf("🔧 [MCP] Qwen 使用默认 BaseURL: %s", client.BaseURL)
-	}
-	if customModel != "" {
-		client.Model = customModel
-		log.Printf("🔧 [MCP] Qwen 使用自定义 Model: %s", customModel)
-	} else {
-		client.Model = "qwen3-max"
-		log.Printf("🔧 [MCP] Qwen 使用默认 Model: %s", client.Model)
-	}
-	// 打印 API Key 的前后各4位用于验证
-	if len(apiKey) > 8 {
-		log.Printf("🔧 [MCP] Qwen API Key: %s...%s", apiKey[:4], apiKey[len(apiKey)-4:])
-	}
-}
-
 // SetCustomAPI 设置自定义OpenAI兼容API
-func (client *Client) SetCustomAPI(apiURL, apiKey, modelName string) {
+func (client *Client) SetAPIKey(apiKey, apiURL, customModel string) {
 	client.Provider = ProviderCustom
 	client.APIKey = apiKey
 
@@ -119,22 +68,14 @@ func (client *Client) SetCustomAPI(apiURL, apiKey, modelName string) {
 		client.UseFullURL = false
 	}
 
-	client.Model = modelName
+	client.Model = customModel
 	client.Timeout = 120 * time.Second
-}
-
-// SetClient 设置完整的AI配置（高级用户）
-func (client *Client) SetClient(Client Client) {
-	if Client.Timeout == 0 {
-		Client.Timeout = 30 * time.Second
-	}
-	client = &Client
 }
 
 // CallWithMessages 使用 system + user prompt 调用AI API（推荐）
 func (client *Client) CallWithMessages(systemPrompt, userPrompt string) (string, error) {
 	if client.APIKey == "" {
-		return "", fmt.Errorf("AI API密钥未设置，请先调用 SetDeepSeekAPIKey() 或 SetQwenAPIKey()")
+		return "", fmt.Errorf("AI API密钥未设置，请先调用 SetAPIKey")
 	}
 
 	// 重试配置
@@ -169,6 +110,10 @@ func (client *Client) CallWithMessages(systemPrompt, userPrompt string) (string,
 	}
 
 	return "", fmt.Errorf("重试%d次后仍然失败: %w", maxRetries, lastErr)
+}
+
+func (client *Client) setAuthHeader(reqHeader http.Header) {
+	reqHeader.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
 }
 
 // callOnce 单次调用AI API（内部使用）
@@ -208,8 +153,7 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 		"max_tokens":  client.MaxTokens,
 	}
 
-	// 注意：response_format 参数仅 OpenAI 支持，DeepSeek/Qwen 不支持
-	// 我们通过强化 prompt 和后处理来确保 JSON 格式正确
+	log.Printf("📡 [MCP] 请求参数: max_tokens=%d, temperature=%.1f", client.MaxTokens, 0.5)
 
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
@@ -234,17 +178,7 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// 根据不同的Provider设置认证方式
-	switch client.Provider {
-	case ProviderDeepSeek:
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
-	case ProviderQwen:
-		// 阿里云Qwen使用API-Key认证
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
-		// 注意：如果使用的不是兼容模式，可能需要不同的认证方式
-	default:
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
-	}
+	client.setAuthHeader(req.Header)
 
 	// 发送请求
 	httpClient := &http.Client{Timeout: client.Timeout}
@@ -270,7 +204,13 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -279,6 +219,19 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("API返回空响应")
+	}
+
+	// 打印响应详情
+	log.Printf("📡 [MCP] 响应详情: finish_reason=%s, prompt_tokens=%d, completion_tokens=%d, total_tokens=%d",
+		result.Choices[0].FinishReason,
+		result.Usage.PromptTokens,
+		result.Usage.CompletionTokens,
+		result.Usage.TotalTokens)
+
+	// 检查是否因为长度限制而截断
+	if result.Choices[0].FinishReason == "length" {
+		log.Printf("⚠️  [MCP] 警告: AI响应因max_tokens限制被截断！当前max_tokens=%d, 实际使用completion_tokens=%d",
+			client.MaxTokens, result.Usage.CompletionTokens)
 	}
 
 	return result.Choices[0].Message.Content, nil

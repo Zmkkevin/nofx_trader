@@ -1230,3 +1230,89 @@ func (t *AsterTrader) FormatQuantity(symbol string, quantity float64) (string, e
 	}
 	return fmt.Sprintf("%v", formatted), nil
 }
+
+// GetRecentFills 获取最近的成交记录
+// Aster 使用 Binance 兼容 API: /fapi/v1/userTrades
+func (t *AsterTrader) GetRecentFills(symbol string, startTime int64, endTime int64) ([]map[string]interface{}, error) {
+	// endTime = 0 表示当前时间
+	if endTime == 0 {
+		endTime = time.Now().UnixMilli()
+	}
+
+	// 构建请求参数
+	params := map[string]interface{}{
+		"symbol":    symbol,
+		"startTime": startTime,
+		"endTime":   endTime,
+		"limit":     500, // 最多返回500条
+	}
+
+	// 调用 Aster API
+	body, err := t.request("GET", "/fapi/v1/userTrades", params)
+	if err != nil {
+		return nil, fmt.Errorf("获取成交记录失败: %w", err)
+	}
+
+	// 解析响应
+	var trades []map[string]interface{}
+	if err := json.Unmarshal(body, &trades); err != nil {
+		return nil, fmt.Errorf("解析成交记录失败: %w", err)
+	}
+
+	// 转换为统一格式
+	var result []map[string]interface{}
+
+	for _, trade := range trades {
+		// 解析价格和数量
+		var price float64
+		var quantity float64
+		var fee float64
+		var timestamp int64
+		var side string
+
+		if priceStr, ok := trade["price"].(string); ok {
+			price, _ = strconv.ParseFloat(priceStr, 64)
+		} else if priceFloat, ok := trade["price"].(float64); ok {
+			price = priceFloat
+		}
+
+		if qtyStr, ok := trade["qty"].(string); ok {
+			quantity, _ = strconv.ParseFloat(qtyStr, 64)
+		} else if qtyFloat, ok := trade["qty"].(float64); ok {
+			quantity = qtyFloat
+		}
+
+		if commissionStr, ok := trade["commission"].(string); ok {
+			fee, _ = strconv.ParseFloat(commissionStr, 64)
+		} else if commissionFloat, ok := trade["commission"].(float64); ok {
+			fee = commissionFloat
+		}
+
+		if timeInt, ok := trade["time"].(float64); ok {
+			timestamp = int64(timeInt)
+		} else if timeInt64, ok := trade["time"].(int64); ok {
+			timestamp = timeInt64
+		}
+
+		// Aster API 返回 side: "BUY" 或 "SELL"
+		// 转换为统一格式 "Buy" / "Sell"
+		if sideStr, ok := trade["side"].(string); ok {
+			if sideStr == "BUY" {
+				side = "Buy"
+			} else {
+				side = "Sell"
+			}
+		}
+
+		result = append(result, map[string]interface{}{
+			"symbol":    symbol,
+			"side":      side,
+			"price":     price,
+			"quantity":  quantity,
+			"timestamp": timestamp,
+			"fee":       fee,
+		})
+	}
+
+	return result, nil
+}

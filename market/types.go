@@ -39,8 +39,8 @@ type Data struct {
 	FundingRate       float64
 	FibonacciOTE      *FibonacciOTE // 斐波那契OTE区域
 	IntradaySeries    *IntradayData
-	MidTermContext15m *MidTermData // 15分钟时间框架数据
-	MidTermContext1h  *MidTermData // 1小时时间框架数据
+	MidTermSeries15m  *MidTermData15m
+	MidTermSeries1h   *MidTermData1h
 	LongerTermContext *LongerTermData
 }
 
@@ -133,6 +133,28 @@ func (m *MidTermData) Format() string {
 	}
 
 	return sb.String()
+}
+
+// MidTermData15m 中期数据(15分钟间隔)
+type MidTermData15m struct {
+	MidPrices   []float64
+	EMA20Values []float64
+	MACDValues  []float64
+	RSI7Values  []float64
+	RSI14Values []float64
+	Volume      []float64
+	ATR14       float64
+}
+
+// MidTermData1h 中期数据(1小时间隔)
+type MidTermData1h struct {
+	MidPrices   []float64
+	EMA20Values []float64
+	MACDValues  []float64
+	RSI7Values  []float64
+	RSI14Values []float64
+	Volume      []float64
+	ATR14       float64
 }
 
 // LongerTermData 长期数据(4小时时间框架)

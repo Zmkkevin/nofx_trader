@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"nofx/auth"
+	"nofx/backtest"
 	"nofx/config"
 	"nofx/crypto"
 	"nofx/decision"
@@ -24,16 +26,23 @@ import (
 
 // Server HTTP API服务器
 type Server struct {
-	router        *gin.Engine
-	httpServer    *http.Server
-	traderManager *manager.TraderManager
-	database      *config.Database
-	cryptoHandler *CryptoHandler
-	port          int
+	router          *gin.Engine
+	httpServer      *http.Server
+	traderManager   *manager.TraderManager
+	database        *config.Database
+	cryptoHandler   *CryptoHandler
+	backtestManager *backtest.Manager
+	port            int
 }
 
 // NewServer 创建API服务器
-func NewServer(traderManager *manager.TraderManager, database *config.Database, cryptoService *crypto.CryptoService, port int) *Server {
+func NewServer(
+	traderManager *manager.TraderManager,
+	database *config.Database,
+	cryptoService *crypto.CryptoService,
+	backtestManager *backtest.Manager,
+	port int,
+) *Server {
 	// 设置为Release模式（减少日志输出）
 	gin.SetMode(gin.ReleaseMode)
 
@@ -46,11 +55,15 @@ func NewServer(traderManager *manager.TraderManager, database *config.Database, 
 	cryptoHandler := NewCryptoHandler(cryptoService)
 
 	s := &Server{
-		router:        router,
-		traderManager: traderManager,
-		database:      database,
-		cryptoHandler: cryptoHandler,
-		port:          port,
+		router:          router,
+		traderManager:   traderManager,
+		database:        database,
+		cryptoHandler:   cryptoHandler,
+		backtestManager: backtestManager,
+		port:            port,
+	}
+	if s.backtestManager != nil {
+		s.backtestManager.SetAIResolver(s.hydrateBacktestAIConfig)
 	}
 
 	// 设置路由
@@ -117,6 +130,11 @@ func (s *Server) setupRoutes() {
 		// 需要认证的路由
 		protected := api.Group("/", s.authMiddleware())
 		{
+			if s.backtestManager != nil {
+				backtestGroup := protected.Group("/backtest")
+				s.registerBacktestRoutes(backtestGroup)
+			}
+
 			// 注销（加入黑名单）
 			protected.POST("/logout", s.handleLogout)
 
@@ -132,7 +150,6 @@ func (s *Server) setupRoutes() {
 			protected.POST("/traders/:id/start", s.handleStartTrader)
 			protected.POST("/traders/:id/stop", s.handleStopTrader)
 			protected.PUT("/traders/:id/prompt", s.handleUpdateTraderPrompt)
-			protected.POST("/traders/:id/sync-balance", s.handleSyncBalance)
 
 			// AI模型配置
 			protected.GET("/models", s.handleGetModelConfigs)
@@ -154,6 +171,7 @@ func (s *Server) setupRoutes() {
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
 			protected.GET("/statistics", s.handleStatistics)
 			protected.GET("/performance", s.handlePerformance)
+			protected.GET("/competition/full", s.handleCompetition)
 		}
 	}
 }
@@ -197,11 +215,18 @@ func (s *Server) handleGetSystemConfig(c *gin.Context) {
 	betaModeStr, _ := s.database.GetSystemConfig("beta_mode")
 	betaMode := betaModeStr == "true"
 
+	regEnabledStr, err := s.database.GetSystemConfig("registration_enabled")
+	registrationEnabled := true
+	if err == nil {
+		registrationEnabled = strings.ToLower(regEnabledStr) != "false"
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"beta_mode":        betaMode,
-		"default_coins":    defaultCoins,
-		"btc_eth_leverage": btcEthLeverage,
-		"altcoin_leverage": altcoinLeverage,
+		"beta_mode":            betaMode,
+		"default_coins":        defaultCoins,
+		"btc_eth_leverage":     btcEthLeverage,
+		"altcoin_leverage":     altcoinLeverage,
+		"registration_enabled": registrationEnabled,
 	})
 }
 
@@ -485,8 +510,9 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		}
 	}
 
-	// 生成交易员ID
-	traderID := fmt.Sprintf("%s_%s_%d", req.ExchangeID, req.AIModelID, time.Now().Unix())
+	// 生成交易员ID (使用 UUID 确保唯一性，解决 Issue #893)
+	// 保留前缀以便调试和日志追踪
+	traderID := fmt.Sprintf("%s_%s_%s", req.ExchangeID, req.AIModelID, uuid.New().String())
 
 	// 设置默认值
 	isCrossMargin := true // 默认为全仓模式
@@ -526,8 +552,8 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 
 	// 设置扫描间隔默认值
 	scanIntervalMinutes := req.ScanIntervalMinutes
-	if scanIntervalMinutes < 3 {
-		scanIntervalMinutes = 3 // 默认3分钟，且不允许小于3
+	if scanIntervalMinutes <= 0 {
+		scanIntervalMinutes = 3 // 默认3分钟
 	}
 
 	// ✨ 查询交易所实际余额，覆盖用户输入
@@ -582,27 +608,37 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 			if balanceErr != nil {
 				log.Printf("⚠️ 查询交易所余额失败，使用用户输入的初始资金: %v", balanceErr)
 			} else {
-                // ✅ 修复：使用总资产（total equity）而不是可用余额来设置初始余额
-				// 总资产 = 钱包余额 + 未实现盈亏，这样才能正确计算总盈亏
-				totalWalletBalance := 0.0
-				totalUnrealizedProfit := 0.0
+				// 🔧 计算Total Equity = Wallet Balance + Unrealized Profit
+				// 这是账户的真实净值，用作Initial Balance的基准
+				var totalWalletBalance float64
+				var totalUnrealizedProfit float64
 
-				if wallet, ok := balanceInfo["totalWalletBalance"].(float64); ok {
-					totalWalletBalance = wallet
-				}
-				if unrealized, ok := balanceInfo["totalUnrealizedProfit"].(float64); ok {
-					totalUnrealizedProfit = unrealized
+				// 提取钱包余额
+				if wb, ok := balanceInfo["totalWalletBalance"].(float64); ok {
+					totalWalletBalance = wb
+				} else if wb, ok := balanceInfo["wallet_balance"].(float64); ok {
+					totalWalletBalance = wb
+				} else if wb, ok := balanceInfo["balance"].(float64); ok {
+					totalWalletBalance = wb
 				}
 
-				// 总资产 = 钱包余额 + 未实现盈亏
+				// 提取未实现盈亏
+				if up, ok := balanceInfo["totalUnrealizedProfit"].(float64); ok {
+					totalUnrealizedProfit = up
+				} else if up, ok := balanceInfo["unrealized_profit"].(float64); ok {
+					totalUnrealizedProfit = up
+				}
+
+				// 计算总净值
 				totalEquity := totalWalletBalance + totalUnrealizedProfit
 
 				if totalEquity > 0 {
 					actualBalance = totalEquity
-					log.Printf("✓ 查询到交易所总资产余额: %.2f USDT (钱包: %.2f + 未实现: %.2f, 用户输入: %.2f USDT)",
+					log.Printf("✅ 查询到交易所实际净值: %.2f USDT (钱包: %.2f + 未实现: %.2f, 用户输入: %.2f)",
 						actualBalance, totalWalletBalance, totalUnrealizedProfit, req.InitialBalance)
 				} else {
-                    log.Printf("⚠️ 无法从余额信息中提取总资产余额，使用用户输入的初始资金")				}
+					log.Printf("⚠️ 无法从余额信息中计算净值，使用用户输入的初始资金")
+				}
 			}
 		}
 	}
@@ -719,8 +755,6 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	scanIntervalMinutes := req.ScanIntervalMinutes
 	if scanIntervalMinutes <= 0 {
 		scanIntervalMinutes = existingTrader.ScanIntervalMinutes // 保持原值
-	} else if scanIntervalMinutes < 3 {
-		scanIntervalMinutes = 3
 	}
 
 	// 设置提示词模板，允许更新
@@ -754,6 +788,21 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新交易员失败: %v", err)})
 		return
 	}
+
+	// 如果请求中包含initial_balance且与现有值不同，单独更新它
+	// UpdateTrader不会更新initial_balance，需要使用专门的方法
+	if req.InitialBalance > 0 && math.Abs(req.InitialBalance-existingTrader.InitialBalance) > 0.1 {
+		err = s.database.UpdateTraderInitialBalance(userID, traderID, req.InitialBalance)
+		if err != nil {
+			log.Printf("⚠️ 更新初始余额失败: %v", err)
+			// 不返回错误，因为主要配置已更新成功
+		} else {
+			log.Printf("✓ 初始余额已更新: %.2f -> %.2f", existingTrader.InitialBalance, req.InitialBalance)
+		}
+	}
+
+	// 🔄 从内存中移除旧的trader实例，以便重新加载最新配置
+	s.traderManager.RemoveTrader(traderID)
 
 	// 重新加载交易员到内存
 	err = s.traderManager.LoadTraderByID(s.database, userID, traderID)
@@ -974,7 +1023,8 @@ func (s *Server) handleSyncBalance(c *gin.Context) {
 		return
 	}
 
-	// 提取可用余额
+	// ✅ 修复：使用总资产（total equity）而不是可用余额来更新初始余额
+	// 总资产 = 钱包余额 + 未实现盈亏，这样才能正确计算总盈亏
 	var actualBalance float64
     totalWalletBalance := 0.0
 	totalUnrealizedProfit := 0.0
@@ -1003,8 +1053,8 @@ func (s *Server) handleSyncBalance(c *gin.Context) {
 		changeType = "减少"
 	}
 
-	log.Printf("✓ 查询到交易所实际余额: %.2f USDT (当前配置: %.2f USDT, 变化: %.2f%%)",
-		actualBalance, oldBalance, changePercent)
+	log.Printf("✓ 查询到交易所总资产余额: %.2f USDT (钱包: %.2f + 未实现: %.2f, 当前配置: %.2f USDT, 变化: %.2f%%)",
+		actualBalance, totalWalletBalance, totalUnrealizedProfit, oldBalance, changePercent)
 
 	// 更新数据库中的 initial_balance
 	err = s.database.UpdateTraderInitialBalance(userID, traderID, actualBalance)
@@ -1294,6 +1344,7 @@ func (s *Server) handleTraderList(c *gin.Context) {
 			"exchange_id":     trader.ExchangeID,
 			"is_running":      isRunning,
 			"initial_balance": trader.InitialBalance,
+			"system_prompt_template": trader.SystemPromptTemplate,
 		})
 	}
 
@@ -1474,7 +1525,13 @@ func (s *Server) handleLatestDecisions(c *gin.Context) {
 		}
 	}
 
-	records, err := trader.GetDecisionLogger().GetLatestRecords(limit)
+	// 从 query 参数读取 only_with_actions，默认 false
+	onlyWithActions := false
+	if filterStr := c.Query("only_with_actions"); filterStr != "" {
+		onlyWithActions = filterStr == "true" || filterStr == "1"
+	}
+
+	records, err := trader.GetDecisionLogger().GetLatestRecordsWithFilter(limit, onlyWithActions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("获取决策日志失败: %v", err),
@@ -1573,22 +1630,16 @@ func (s *Server) handleEquityHistory(c *gin.Context) {
 		CycleNumber      int     `json:"cycle_number"`
 	}
 
-	// 从AutoTrader获取初始余额（用于计算盈亏百分比）
-	initialBalance := 0.0
+	// 从AutoTrader获取当前初始余额（用作旧数据的fallback）
+	base := 0.0
 	if status := trader.GetStatus(); status != nil {
 		if ib, ok := status["initial_balance"].(float64); ok && ib > 0 {
-			initialBalance = ib
+			base = ib
 		}
 	}
 
-	// 如果无法从status获取，且有历史记录，则从第一条记录获取
-	if initialBalance == 0 && len(records) > 0 {
-		// 第一条记录的equity作为初始余额
-		initialBalance = records[0].AccountState.TotalBalance
-	}
-
 	// 如果还是无法获取，返回错误
-	if initialBalance == 0 {
+	if base == 0 {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "无法获取初始余额",
 		})
@@ -1598,14 +1649,24 @@ func (s *Server) handleEquityHistory(c *gin.Context) {
 	var history []EquityPoint
 	for _, record := range records {
 		// TotalBalance字段实际存储的是TotalEquity
-		totalEquity := record.AccountState.TotalBalance
+		// totalEquity := record.AccountState.TotalBalance
 		// TotalUnrealizedProfit字段实际存储的是TotalPnL（相对初始余额）
-		totalPnL := record.AccountState.TotalUnrealizedProfit
+		// totalPnL := record.AccountState.TotalUnrealizedProfit
+		walletBalance := record.AccountState.TotalBalance
+		unrealizedPnL := record.AccountState.TotalUnrealizedProfit
+		totalEquity := walletBalance + unrealizedPnL
 
+		// 🔄 使用历史记录中保存的initial_balance（如果有）
+		// 这样可以保持历史PNL%的准确性，即使用户后来更新了initial_balance
+		if record.AccountState.InitialBalance > 0 {
+			base = record.AccountState.InitialBalance
+		}
+
+		totalPnL := totalEquity - base
 		// 计算盈亏百分比
 		totalPnLPct := 0.0
-		if initialBalance > 0 {
-			totalPnLPct = (totalPnL / initialBalance) * 100
+		if base > 0 {
+			totalPnLPct = (totalPnL / base) * 100
 		}
 
 		history = append(history, EquityPoint{
@@ -1637,12 +1698,27 @@ func (s *Server) handlePerformance(c *gin.Context) {
 		return
 	}
 
-	// 分析最近100个周期的交易表现（避免长期持仓的交易记录丢失）
-	// 假设每3分钟一个周期，100个周期 = 5小时，足够覆盖大部分交易
-	performance, err := trader.GetDecisionLogger().AnalyzePerformance(100)
+	// 从 query 参数读取历史成交显示条数 limit，默认 20 条
+	tradeLimit := 20
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
+			tradeLimit = l
+		}
+	}
+
+	// 从 query 参数读取是否按 PromptHash 过滤，默认 true（只显示当前提示词版本）
+	filterByPrompt := true
+	if filterStr := c.Query("filter_by_prompt"); filterStr == "false" {
+		filterByPrompt = false
+	} else if filterStr == "true" {
+		filterByPrompt = true
+	}
+
+	// 🚀 使用统一的缓存懒加载逻辑
+	performance, err := trader.GetDecisionLogger().GetPerformanceWithCache(tradeLimit, filterByPrompt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": fmt.Sprintf("分析历史表现失败: %v", err),
+			"error": fmt.Sprintf("获取历史表现失败: %v", err),
 		})
 		return
 	}
@@ -1722,6 +1798,14 @@ func (s *Server) handleLogout(c *gin.Context) {
 
 // handleRegister 处理用户注册请求
 func (s *Server) handleRegister(c *gin.Context) {
+	regEnabled := true
+	if regStr, err := s.database.GetSystemConfig("registration_enabled"); err == nil {
+		regEnabled = strings.ToLower(regStr) != "false"
+	}
+	if !regEnabled {
+		c.JSON(http.StatusForbidden, gin.H{"error": "注册已关闭"})
+		return
+	}
 
 	var req struct {
 		Email    string `json:"email" binding:"required,email"`
@@ -2063,28 +2147,42 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.port)
 	log.Printf("🌐 API服务器启动在 http://localhost%s", addr)
 	log.Printf("📊 API文档:")
-	log.Printf("  • GET  /api/health           - 健康检查")
-	log.Printf("  • GET  /api/traders          - 公开的AI交易员排行榜前50名（无需认证）")
-	log.Printf("  • GET  /api/competition      - 公开的竞赛数据（无需认证）")
-	log.Printf("  • GET  /api/top-traders      - 前5名交易员数据（无需认证，表现对比用）")
-	log.Printf("  • GET  /api/equity-history?trader_id=xxx - 公开的收益率历史数据（无需认证，竞赛用）")
-	log.Printf("  • GET  /api/equity-history-batch?trader_ids=a,b,c - 批量获取历史数据（无需认证，表现对比优化）")
-	log.Printf("  • GET  /api/traders/:id/public-config - 公开的交易员配置（无需认证，不含敏感信息）")
-	log.Printf("  • POST /api/traders          - 创建新的AI交易员")
-	log.Printf("  • DELETE /api/traders/:id    - 删除AI交易员")
-	log.Printf("  • POST /api/traders/:id/start - 启动AI交易员")
-	log.Printf("  • POST /api/traders/:id/stop  - 停止AI交易员")
-	log.Printf("  • GET  /api/models           - 获取AI模型配置")
-	log.Printf("  • PUT  /api/models           - 更新AI模型配置")
-	log.Printf("  • GET  /api/exchanges        - 获取交易所配置")
-	log.Printf("  • PUT  /api/exchanges        - 更新交易所配置")
-	log.Printf("  • GET  /api/status?trader_id=xxx     - 指定trader的系统状态")
-	log.Printf("  • GET  /api/account?trader_id=xxx    - 指定trader的账户信息")
-	log.Printf("  • GET  /api/positions?trader_id=xxx  - 指定trader的持仓列表")
-	log.Printf("  • GET  /api/decisions?trader_id=xxx  - 指定trader的决策日志")
-	log.Printf("  • GET  /api/decisions/latest?trader_id=xxx - 指定trader的最新决策")
-	log.Printf("  • GET  /api/statistics?trader_id=xxx - 指定trader的统计信息")
-	log.Printf("  • GET  /api/performance?trader_id=xxx - 指定trader的AI学习表现分析")
+	log.Printf("  • GET  /api/health                    - 健康检查")
+	log.Printf("  • 公共竞赛/排行榜相关接口")
+	log.Printf("      - GET  /api/traders               - 公开的AI交易员排行榜（无需认证）")
+	log.Printf("      - GET  /api/competition           - 公开竞赛数据（无需认证）")
+	log.Printf("      - GET  /api/top-traders           - 前5名交易员（无需认证）")
+	log.Printf("      - GET  /api/equity-history        - 指定trader收益率历史（无需认证）")
+	log.Printf("      - POST /api/equity-history-batch  - 批量获取收益率历史（无需认证）")
+	log.Printf("      - GET  /api/traders/:id/public-config - 公开交易员配置（无需认证）")
+	log.Printf("  • Backtest")
+	log.Printf("      - GET  /api/backtest/runs         - 回测运行列表")
+	log.Printf("      - POST /api/backtest/start        - 启动新的回测")
+	log.Printf("      - POST /api/backtest/pause        - 暂停指定回测")
+	log.Printf("      - POST /api/backtest/resume       - 恢复指定回测")
+	log.Printf("      - POST /api/backtest/stop         - 停止指定回测")
+	log.Printf("      - GET  /api/backtest/status       - 查询回测状态")
+	log.Printf("      - GET  /api/backtest/equity       - 回测净值曲线")
+	log.Printf("      - GET  /api/backtest/trades       - 回测交易记录")
+	log.Printf("      - GET  /api/backtest/metrics      - 回测统计指标")
+	log.Printf("      - GET  /api/backtest/trace        - 回测AI Trace")
+	log.Printf("      - GET  /api/backtest/export       - 导出回测数据ZIP")
+	log.Printf("  • Trader / 配置（需认证）")
+	log.Printf("      - POST /api/traders               - 创建AI交易员")
+	log.Printf("      - DELETE /api/traders/:id         - 删除AI交易员")
+	log.Printf("      - POST /api/traders/:id/start     - 启动AI交易员")
+	log.Printf("      - POST /api/traders/:id/stop      - 停止AI交易员")
+	log.Printf("      - GET  /api/models                - 获取AI模型配置")
+	log.Printf("      - PUT  /api/models                - 更新AI模型配置")
+	log.Printf("      - GET  /api/exchanges             - 获取交易所配置")
+	log.Printf("      - PUT  /api/exchanges             - 更新交易所配置")
+	log.Printf("      - GET  /api/status?trader_id=xxx  - 指定trader的系统状态")
+	log.Printf("      - GET  /api/account?trader_id=xxx - 指定trader的账户信息")
+	log.Printf("      - GET  /api/positions?trader_id=xxx - 指定trader的持仓列表")
+	log.Printf("      - GET  /api/decisions?trader_id=xxx - 指定trader的决策日志")
+	log.Printf("      - GET  /api/decisions/latest?trader_id=xxx - 指定trader的最新决策")
+	log.Printf("      - GET  /api/statistics?trader_id=xxx - 指定trader的统计信息")
+	log.Printf("      - GET  /api/performance?trader_id=xxx - AI学习表现分析")
 	log.Println()
 
 	// 创建 http.Server 以支持 graceful shutdown
@@ -2183,6 +2281,7 @@ func (s *Server) handlePublicTraderList(c *gin.Context) {
 			"total_pnl_pct":   trader["total_pnl_pct"],
 			"position_count":  trader["position_count"],
 			"margin_used_pct": trader["margin_used_pct"],
+			"system_prompt_template": trader["system_prompt_template"],
 		})
 	}
 
