@@ -252,10 +252,6 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		traderConfig.AsterUser = exchangeCfg.AsterUser
 		traderConfig.AsterSigner = exchangeCfg.AsterSigner
 		traderConfig.AsterPrivateKey = exchangeCfg.AsterPrivateKey
-	} else if exchangeCfg.ID == "lighter" {
-		traderConfig.LighterPrivateKey = exchangeCfg.LighterPrivateKey
-		traderConfig.LighterWalletAddr = exchangeCfg.LighterWalletAddr
-		traderConfig.LighterTestnet = exchangeCfg.Testnet
 	}
 
 	// 根据AI模型设置API密钥
@@ -263,6 +259,10 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		traderConfig.QwenKey = aiModelCfg.APIKey
 	} else if aiModelCfg.Provider == "deepseek" {
 		traderConfig.DeepSeekKey = aiModelCfg.APIKey
+	} else {
+		// 其他provider (openai, anthropic, custom等) 使用 CustomAPIKey
+		traderConfig.CustomAPIKey = aiModelCfg.APIKey
+		log.Printf("🔑 [%s] 使用自定义AI Provider: %s", traderCfg.Name, aiModelCfg.Provider)
 	}
 
 	// 创建trader实例
@@ -362,10 +362,6 @@ func (tm *TraderManager) AddTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		traderConfig.AsterUser = exchangeCfg.AsterUser
 		traderConfig.AsterSigner = exchangeCfg.AsterSigner
 		traderConfig.AsterPrivateKey = exchangeCfg.AsterPrivateKey
-	} else if exchangeCfg.ID == "lighter" {
-		traderConfig.LighterPrivateKey = exchangeCfg.LighterPrivateKey
-		traderConfig.LighterWalletAddr = exchangeCfg.LighterWalletAddr
-		traderConfig.LighterTestnet = exchangeCfg.Testnet
 	}
 
 	// 根据AI模型设置API密钥
@@ -373,6 +369,10 @@ func (tm *TraderManager) AddTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		traderConfig.QwenKey = aiModelCfg.APIKey
 	} else if aiModelCfg.Provider == "deepseek" {
 		traderConfig.DeepSeekKey = aiModelCfg.APIKey
+	} else {
+		// 其他provider (openai, anthropic, custom等) 使用 CustomAPIKey
+		traderConfig.CustomAPIKey = aiModelCfg.APIKey
+		log.Printf("🔑 [%s] 使用自定义AI Provider: %s", traderCfg.Name, aiModelCfg.Provider)
 	}
 
 	// 创建trader实例
@@ -646,51 +646,51 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 			case account := <-accountChan:
 				// 成功获取账户信息
 				traderData = map[string]interface{}{
-					"trader_id":              trader.GetID(),
-					"trader_name":            trader.GetName(),
-					"ai_model":               trader.GetAIModel(),
-					"exchange":               trader.GetExchange(),
-					"total_equity":           account["total_equity"],
-					"total_pnl":              account["total_pnl"],
-					"total_pnl_pct":          account["total_pnl_pct"],
-					"position_count":         account["position_count"],
-					"margin_used_pct":        account["margin_used_pct"],
-					"is_running":             status["is_running"],
+					"trader_id":       trader.GetID(),
+					"trader_name":     trader.GetName(),
+					"ai_model":        trader.GetAIModel(),
+					"exchange":        trader.GetExchange(),
+					"total_equity":    account["total_equity"],
+					"total_pnl":       account["total_pnl"],
+					"total_pnl_pct":   account["total_pnl_pct"],
+					"position_count":  account["position_count"],
+					"margin_used_pct": account["margin_used_pct"],
+					"is_running":      status["is_running"],
 					"system_prompt_template": trader.GetSystemPromptTemplate(),
 				}
 			case err := <-errorChan:
 				// 获取账户信息失败
 				log.Printf("⚠️ 获取交易员 %s 账户信息失败: %v", trader.GetID(), err)
 				traderData = map[string]interface{}{
-					"trader_id":              trader.GetID(),
-					"trader_name":            trader.GetName(),
-					"ai_model":               trader.GetAIModel(),
-					"exchange":               trader.GetExchange(),
-					"total_equity":           0.0,
-					"total_pnl":              0.0,
-					"total_pnl_pct":          0.0,
-					"position_count":         0,
-					"margin_used_pct":        0.0,
-					"is_running":             status["is_running"],
+					"trader_id":       trader.GetID(),
+					"trader_name":     trader.GetName(),
+					"ai_model":        trader.GetAIModel(),
+					"exchange":        trader.GetExchange(),
+					"total_equity":    0.0,
+					"total_pnl":       0.0,
+					"total_pnl_pct":   0.0,
+					"position_count":  0,
+					"margin_used_pct": 0.0,
+					"is_running":      status["is_running"],
 					"system_prompt_template": trader.GetSystemPromptTemplate(),
-					"error":                  "账户数据获取失败",
+					"error":           "账户数据获取失败",
 				}
 			case <-ctx.Done():
 				// 超时
 				log.Printf("⏰ 获取交易员 %s 账户信息超时", trader.GetID())
 				traderData = map[string]interface{}{
-					"trader_id":              trader.GetID(),
-					"trader_name":            trader.GetName(),
-					"ai_model":               trader.GetAIModel(),
-					"exchange":               trader.GetExchange(),
-					"total_equity":           0.0,
-					"total_pnl":              0.0,
-					"total_pnl_pct":          0.0,
-					"position_count":         0,
-					"margin_used_pct":        0.0,
-					"is_running":             status["is_running"],
+					"trader_id":       trader.GetID(),
+					"trader_name":     trader.GetName(),
+					"ai_model":        trader.GetAIModel(),
+					"exchange":        trader.GetExchange(),
+					"total_equity":    0.0,
+					"total_pnl":       0.0,
+					"total_pnl_pct":   0.0,
+					"position_count":  0,
+					"margin_used_pct": 0.0,
+					"is_running":      status["is_running"],
 					"system_prompt_template": trader.GetSystemPromptTemplate(),
-					"error":                  "获取超时",
+					"error":           "获取超时",
 				}
 			}
 
@@ -901,6 +901,35 @@ func (tm *TraderManager) LoadUserTraders(database *config.Database, userID strin
 	}
 
 	return nil
+}
+
+// ReloadUserTraders 强制重新加载用户的所有交易员（用于配置更新后）
+func (tm *TraderManager) ReloadUserTraders(database *config.Database, userID string) error {
+	// 1. 获取数据库中的交易员列表
+	traders, err := database.GetTraders(userID)
+	if err != nil {
+		return fmt.Errorf("获取用户 %s 的交易员列表失败: %w", userID, err)
+	}
+
+	// 2. 移除内存中的这些交易员
+	tm.mu.Lock()
+	for _, t := range traders {
+		if oldTrader, exists := tm.traders[t.ID]; exists {
+			// 如果交易员正在运行，先停止它
+			status := oldTrader.GetStatus()
+			if isRunning, ok := status["is_running"].(bool); ok && isRunning {
+				oldTrader.Stop()
+				log.Printf("⏹  配置更新: 已停止并移除运行中的交易员 %s", t.Name)
+			} else {
+				log.Printf("🔄 配置更新: 已移除交易员实例 %s", t.Name)
+			}
+			delete(tm.traders, t.ID)
+		}
+	}
+	tm.mu.Unlock()
+
+	// 3. 重新加载（LoadUserTraders 会处理并发锁）
+	return tm.LoadUserTraders(database, userID)
 }
 
 // LoadTraderByID 加载指定ID的单个交易员到内存
@@ -1115,10 +1144,6 @@ func (tm *TraderManager) loadSingleTrader(traderCfg *config.TraderRecord, aiMode
 		traderConfig.AsterUser = exchangeCfg.AsterUser
 		traderConfig.AsterSigner = exchangeCfg.AsterSigner
 		traderConfig.AsterPrivateKey = exchangeCfg.AsterPrivateKey
-	} else if exchangeCfg.ID == "lighter" {
-		traderConfig.LighterPrivateKey = exchangeCfg.LighterPrivateKey
-		traderConfig.LighterWalletAddr = exchangeCfg.LighterWalletAddr
-		traderConfig.LighterTestnet = exchangeCfg.Testnet
 	}
 
 	// 根据AI模型设置API密钥
@@ -1126,6 +1151,10 @@ func (tm *TraderManager) loadSingleTrader(traderCfg *config.TraderRecord, aiMode
 		traderConfig.QwenKey = aiModelCfg.APIKey
 	} else if aiModelCfg.Provider == "deepseek" {
 		traderConfig.DeepSeekKey = aiModelCfg.APIKey
+	} else {
+		// 其他provider (openai, anthropic, custom等) 使用 CustomAPIKey
+		traderConfig.CustomAPIKey = aiModelCfg.APIKey
+		log.Printf("🔑 [%s] 使用自定义AI Provider: %s", traderCfg.Name, aiModelCfg.Provider)
 	}
 
 	// 创建trader实例

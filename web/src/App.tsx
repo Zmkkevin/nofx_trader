@@ -9,13 +9,16 @@ import { ResetPasswordPage } from './components/ResetPasswordPage'
 import { CompetitionPage } from './components/CompetitionPage'
 import { LandingPage } from './pages/LandingPage'
 import { FAQPage } from './pages/FAQPage'
-import HeaderBar from './components/landing/HeaderBar'
+import HeaderBar from './components/HeaderBar'
 import AILearning from './components/AILearning'
 import { LanguageProvider, useLanguage } from './contexts/LanguageContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { t, type Language } from './i18n/translations'
 import { useSystemConfig } from './hooks/useSystemConfig'
-import { AlertTriangle } from 'lucide-react'
+import { DecisionCard } from './components/DecisionCard'
+import { BacktestPage } from './components/BacktestPage'
+import RecordLimitSelector from './components/RecordLimitSelector'
+import FilterToggle from './components/FilterToggle'
 import type {
   SystemStatus,
   AccountInfo,
@@ -25,7 +28,7 @@ import type {
   TraderInfo,
 } from './types'
 
-type Page = 'competition' | 'traders' | 'trader'
+type Page = 'competition' | 'traders' | 'trader' | 'backtest'
 
 // 获取友好的AI模型名称
 function getModelDisplayName(modelId: string): string {
@@ -44,7 +47,7 @@ function getModelDisplayName(modelId: string): string {
 function App() {
   const { language, setLanguage } = useLanguage()
   const { user, token, logout, isLoading } = useAuth()
-  const { config: systemConfig, loading: configLoading } = useSystemConfig()
+  const { loading: configLoading } = useSystemConfig()
   const [route, setRoute] = useState(window.location.pathname)
 
   // 从URL路径读取初始页面状态（支持刷新保持页面）
@@ -53,6 +56,7 @@ function App() {
     const hash = window.location.hash.slice(1) // 去掉 #
 
     if (path === '/traders' || hash === 'traders') return 'traders'
+    if (path === '/backtest' || hash === 'backtest') return 'backtest'
     if (path === '/dashboard' || hash === 'trader' || hash === 'details')
       return 'trader'
     return 'competition' // 默认为竞赛页面
@@ -68,10 +72,22 @@ function App() {
     return saved ? parseInt(saved, 10) : 5
   })
 
+  // 过滤器状态（从 localStorage 读取，默认 false）
+  const [showOnlyWithActions, setShowOnlyWithActions] = useState<boolean>(() => {
+    const saved = localStorage.getItem('showOnlyWithActions')
+    return saved ? JSON.parse(saved) : false
+  })
+
   // 当 limit 变化时保存到 localStorage
   const handleLimitChange = (newLimit: number) => {
     setDecisionLimit(newLimit)
     localStorage.setItem('decisionLimit', newLimit.toString())
+  }
+
+  // 当过滤状态变化时保存到 localStorage
+  const handleFilterChange = (enabled: boolean) => {
+    setShowOnlyWithActions(enabled)
+    localStorage.setItem('showOnlyWithActions', JSON.stringify(enabled))
   }
 
   // 监听URL变化，同步页面状态
@@ -82,6 +98,8 @@ function App() {
 
       if (path === '/traders' || hash === 'traders') {
         setCurrentPage('traders')
+      } else if (path === '/backtest' || hash === 'backtest') {
+        setCurrentPage('backtest')
       } else if (
         path === '/dashboard' ||
         hash === 'trader' ||
@@ -113,11 +131,12 @@ function App() {
   // };
 
   // 获取trader列表（仅在用户登录时）
-  const { data: traders } = useSWR<TraderInfo[]>(
+  const { data: traders, error: tradersError } = useSWR<TraderInfo[]>(
     user && token ? 'traders' : null,
     api.getTraders,
     {
       refreshInterval: 10000,
+      shouldRetryOnError: false, // 避免在后端未运行时无限重试
     }
   )
 
@@ -167,9 +186,9 @@ function App() {
 
   const { data: decisions } = useSWR<DecisionRecord[]>(
     currentPage === 'trader' && selectedTraderId
-      ? `decisions/latest-${selectedTraderId}-${decisionLimit}`
+      ? `decisions/latest-${selectedTraderId}-${decisionLimit}-${showOnlyWithActions}`
       : null,
-    () => api.getLatestDecisions(selectedTraderId, decisionLimit),
+    () => api.getLatestDecisions(selectedTraderId, decisionLimit, showOnlyWithActions),
     {
       refreshInterval: 30000, // 30秒刷新（决策更新频率较低）
       revalidateOnFocus: false,
@@ -242,10 +261,6 @@ function App() {
     return <LoginPage />
   }
   if (route === '/register') {
-    if (systemConfig?.admin_mode) {
-      window.history.pushState({}, '', '/login')
-      return <LoginPage />
-    }
     return <RegisterPage />
   }
   if (route === '/faq') {
@@ -267,7 +282,6 @@ function App() {
           onLanguageChange={setLanguage}
           user={user}
           onLogout={logout}
-          isAdminMode={systemConfig?.admin_mode}
           onPageChange={(page) => {
             console.log('Competition page onPageChange called with:', page)
             console.log('Current route:', route, 'Current page:', currentPage)
@@ -291,6 +305,11 @@ function App() {
               console.log('Navigating to faq')
               window.history.pushState({}, '', '/faq')
               setRoute('/faq')
+            } else if (page === 'backtest') {
+              console.log('Navigating to backtest')
+              window.history.pushState({}, '', '/backtest')
+              setRoute('/backtest')
+              setCurrentPage('backtest')
             }
 
             console.log(
@@ -310,16 +329,11 @@ function App() {
 
   // Show landing page for root route
   if (route === '/' || route === '') {
-    return <LandingPage isAdminMode={systemConfig?.admin_mode} />
+    return <LandingPage />
   }
 
-  // In admin mode, require authentication for any protected routes
-  if (systemConfig?.admin_mode && (!user || !token)) {
-    return <LoginPage />
-  }
-
-  // Show main app for authenticated users on other routes (non-admin mode)
-  if (!systemConfig?.admin_mode && (!user || !token)) {
+  // Show main app for authenticated users on other routes
+  if (!user || !token) {
     // Default to landing page when not authenticated and no specific route
     return <LandingPage />
   }
@@ -336,7 +350,6 @@ function App() {
         onLanguageChange={setLanguage}
         user={user}
         onLogout={logout}
-        isAdminMode={systemConfig?.admin_mode}
         onPageChange={(page) => {
           console.log('Main app onPageChange called with:', page)
 
@@ -352,6 +365,10 @@ function App() {
             window.history.pushState({}, '', '/dashboard')
             setRoute('/dashboard')
             setCurrentPage('trader')
+          } else if (page === 'backtest') {
+            window.history.pushState({}, '', '/backtest')
+            setRoute('/backtest')
+            setCurrentPage('backtest')
           } else if (page === 'faq') {
             window.history.pushState({}, '', '/faq')
             setRoute('/faq')
@@ -372,6 +389,8 @@ function App() {
               setCurrentPage('trader')
             }}
           />
+        ) : currentPage === 'backtest' ? (
+          <BacktestPage />
         ) : (
           <TraderDetailsPage
             selectedTrader={selectedTrader}
@@ -383,10 +402,18 @@ function App() {
             lastUpdate={lastUpdate}
             language={language}
             traders={traders}
+            tradersError={tradersError}
             selectedTraderId={selectedTraderId}
             onTraderSelect={setSelectedTraderId}
             decisionLimit={decisionLimit}
             onLimitChange={handleLimitChange}
+            showOnlyWithActions={showOnlyWithActions}
+            onFilterChange={handleFilterChange}
+            onNavigateToTraders={() => {
+              window.history.pushState({}, '', '/traders')
+              setRoute('/traders')
+              setCurrentPage('traders')
+            }}
           />
         )}
       </main>
@@ -451,15 +478,25 @@ function TraderDetailsPage({
   lastUpdate,
   language,
   traders,
+  tradersError,
   selectedTraderId,
   onTraderSelect,
   decisionLimit,
   onLimitChange,
+  showOnlyWithActions,
+  onFilterChange,
+  onNavigateToTraders,
 }: {
   selectedTrader?: TraderInfo
   traders?: TraderInfo[]
+  tradersError?: Error
   selectedTraderId?: string
   onTraderSelect: (traderId: string) => void
+  decisionLimit: number
+  onLimitChange: (limit: number) => void
+  showOnlyWithActions: boolean
+  onFilterChange: (enabled: boolean) => void
+  onNavigateToTraders: () => void
   status?: SystemStatus
   account?: AccountInfo
   positions?: Position[]
@@ -467,9 +504,120 @@ function TraderDetailsPage({
   stats?: Statistics
   lastUpdate: string
   language: Language
-  decisionLimit: number
-  onLimitChange: (limit: number) => void
 }) {
+  // If API failed with error, show empty state (likely backend not running)
+  if (tradersError) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="text-center max-w-md mx-auto px-6">
+          {/* Icon */}
+          <div
+            className="w-24 h-24 mx-auto mb-6 rounded-full flex items-center justify-center"
+            style={{
+              background: 'rgba(240, 185, 11, 0.1)',
+              border: '2px solid rgba(240, 185, 11, 0.3)',
+            }}
+          >
+            <svg
+              className="w-12 h-12"
+              style={{ color: '#F0B90B' }}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+              />
+            </svg>
+          </div>
+
+          {/* Title */}
+          <h2 className="text-2xl font-bold mb-3" style={{ color: '#EAECEF' }}>
+            {t('dashboardEmptyTitle', language)}
+          </h2>
+
+          {/* Description */}
+          <p className="text-base mb-6" style={{ color: '#848E9C' }}>
+            {t('dashboardEmptyDescription', language)}
+          </p>
+
+          {/* CTA Button */}
+          <button
+            onClick={onNavigateToTraders}
+            className="px-6 py-3 rounded-lg font-semibold transition-all hover:scale-105 active:scale-95"
+            style={{
+              background: 'linear-gradient(135deg, #F0B90B 0%, #FCD535 100%)',
+              color: '#0B0E11',
+              boxShadow: '0 4px 12px rgba(240, 185, 11, 0.3)',
+            }}
+          >
+            {t('goToTradersPage', language)}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // If traders is loaded and empty, show empty state
+  if (traders && traders.length === 0) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="text-center max-w-md mx-auto px-6">
+          {/* Icon */}
+          <div
+            className="w-24 h-24 mx-auto mb-6 rounded-full flex items-center justify-center"
+            style={{
+              background: 'rgba(240, 185, 11, 0.1)',
+              border: '2px solid rgba(240, 185, 11, 0.3)',
+            }}
+          >
+            <svg
+              className="w-12 h-12"
+              style={{ color: '#F0B90B' }}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+              />
+            </svg>
+          </div>
+
+          {/* Title */}
+          <h2 className="text-2xl font-bold mb-3" style={{ color: '#EAECEF' }}>
+            {t('dashboardEmptyTitle', language)}
+          </h2>
+
+          {/* Description */}
+          <p className="text-base mb-6" style={{ color: '#848E9C' }}>
+            {t('dashboardEmptyDescription', language)}
+          </p>
+
+          {/* CTA Button */}
+          <button
+            onClick={onNavigateToTraders}
+            className="px-6 py-3 rounded-lg font-semibold transition-all hover:scale-105 active:scale-95"
+            style={{
+              background: 'linear-gradient(135deg, #F0B90B 0%, #FCD535 100%)',
+              color: '#0B0E11',
+              boxShadow: '0 4px 12px rgba(240, 185, 11, 0.3)',
+            }}
+          >
+            {t('goToTradersPage', language)}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // If traders is still loading or selectedTrader is not ready, show skeleton
   if (!selectedTrader) {
     return (
       <div className="space-y-6">
@@ -807,55 +955,43 @@ function TraderDetailsPage({
           style={{ animationDelay: '0.2s' }}
         >
           {/* 标题 */}
-          <div
-            className="flex items-center justify-between mb-5 pb-4 border-b"
-            style={{ borderColor: '#2B3139' }}
-          >
-            <div className="flex items-center gap-3">
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center text-xl"
-                style={{
-                  background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
-                  boxShadow: '0 4px 14px rgba(99, 102, 241, 0.4)',
-                }}
-              >
-                🧠
+          <div className="mb-5 pb-4 border-b" style={{ borderColor: '#2B3139' }}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center text-xl"
+                  style={{
+                    background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
+                    boxShadow: '0 4px 14px rgba(99, 102, 241, 0.4)',
+                  }}
+                >
+                  🧠
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold" style={{ color: '#EAECEF' }}>
+                    {t('recentDecisions', language)}
+                  </h2>
+                  {decisions && decisions.length > 0 && (
+                    <div className="text-xs" style={{ color: '#848E9C' }}>
+                      {t('lastCycles', language, { count: decisions.length })}
+                    </div>
+                  )}
+                </div>
               </div>
-              <div>
-                <h2 className="text-xl font-bold" style={{ color: '#EAECEF' }}>
-                  {t('recentDecisions', language)}
-                </h2>
-                {decisions && decisions.length > 0 && (
-                  <div className="text-xs" style={{ color: '#848E9C' }}>
-                    {t('lastCycles', language, { count: decisions.length })}
-                  </div>
-                )}
-              </div>
-            </div>
 
-            {/* 显示数量选择器 */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs" style={{ color: '#848E9C' }}>
-                {language === 'zh' ? '显示' : 'Show'}:
-              </span>
-              <select
-                value={decisionLimit}
-                onChange={(e) => onLimitChange(parseInt(e.target.value, 10))}
-                className="rounded px-2 py-1 text-xs font-medium cursor-pointer transition-colors"
-                style={{
-                  background: '#1E2329',
-                  border: '1px solid #2B3139',
-                  color: '#EAECEF',
-                }}
-              >
-                <option value={5}>5</option>
-                <option value={10}>10</option>
-                <option value={20}>20</option>
-                <option value={50}>50</option>
-              </select>
-              <span className="text-xs" style={{ color: '#848E9C' }}>
-                {language === 'zh' ? '条' : ''}
-              </span>
+              {/* 过滤器和数量选择器 */}
+              <div className="flex items-center gap-2">
+                <FilterToggle
+                  enabled={showOnlyWithActions}
+                  onChange={onFilterChange}
+                  language={language}
+                />
+                <RecordLimitSelector
+                  limit={decisionLimit}
+                  onLimitChange={onLimitChange}
+                  language={language}
+                />
+              </div>
             </div>
           </div>
 
@@ -947,264 +1083,6 @@ function StatCard({
       {subtitle && (
         <div className="text-xs mt-2 mono" style={{ color: '#848E9C' }}>
           {subtitle}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// Decision Card Component with CoT Trace - Binance Style
-function DecisionCard({
-  decision,
-  language,
-}: {
-  decision: DecisionRecord
-  language: Language
-}) {
-  const [showInputPrompt, setShowInputPrompt] = useState(false)
-  const [showCoT, setShowCoT] = useState(false)
-
-  return (
-    <div
-      className="rounded p-5 transition-all duration-300 hover:translate-y-[-2px]"
-      style={{
-        border: '1px solid #2B3139',
-        background: '#1E2329',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)',
-      }}
-    >
-      {/* Header */}
-      <div className="flex items-start justify-between mb-3">
-        <div>
-          <div className="font-semibold" style={{ color: '#EAECEF' }}>
-            {t('cycle', language)} #{decision.cycle_number}
-          </div>
-          <div className="text-xs" style={{ color: '#848E9C' }}>
-            {new Date(decision.timestamp).toLocaleString()}
-          </div>
-        </div>
-        <div
-          className="px-3 py-1 rounded text-xs font-bold"
-          style={
-            decision.success
-              ? { background: 'rgba(14, 203, 129, 0.1)', color: '#0ECB81' }
-              : { background: 'rgba(246, 70, 93, 0.1)', color: '#F6465D' }
-          }
-        >
-          {t(decision.success ? 'success' : 'failed', language)}
-        </div>
-      </div>
-
-      {/* Input Prompt - Collapsible */}
-      {decision.input_prompt && (
-        <div className="mb-3">
-          <button
-            onClick={() => setShowInputPrompt(!showInputPrompt)}
-            className="flex items-center gap-2 text-sm transition-colors"
-            style={{ color: '#60a5fa' }}
-          >
-            <span className="font-semibold">
-              📥 {t('inputPrompt', language)}
-            </span>
-            <span className="text-xs">
-              {showInputPrompt
-                ? t('collapse', language)
-                : t('expand', language)}
-            </span>
-          </button>
-          {showInputPrompt && (
-            <div
-              className="mt-2 rounded p-4 text-sm font-mono whitespace-pre-wrap max-h-96 overflow-y-auto"
-              style={{
-                background: '#0B0E11',
-                border: '1px solid #2B3139',
-                color: '#EAECEF',
-              }}
-            >
-              {decision.input_prompt}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* AI Chain of Thought - Collapsible */}
-      {decision.cot_trace && (
-        <div className="mb-3">
-          <button
-            onClick={() => setShowCoT(!showCoT)}
-            className="flex items-center gap-2 text-sm transition-colors"
-            style={{ color: '#F0B90B' }}
-          >
-            <span className="font-semibold">
-              📤 {t('aiThinking', language)}
-            </span>
-            <span className="text-xs">
-              {showCoT ? t('collapse', language) : t('expand', language)}
-            </span>
-          </button>
-          {showCoT && (
-            <div
-              className="mt-2 rounded p-4 text-sm font-mono whitespace-pre-wrap max-h-96 overflow-y-auto"
-              style={{
-                background: '#0B0E11',
-                border: '1px solid #2B3139',
-                color: '#EAECEF',
-              }}
-            >
-              {decision.cot_trace}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Decisions Actions */}
-      {decision.decisions && decision.decisions.length > 0 && (
-        <div className="space-y-2 mb-3">
-          {decision.decisions.map((action, j) => (
-            <div
-              key={j}
-              className="flex items-center gap-2 text-sm rounded px-3 py-2"
-              style={{ background: '#0B0E11' }}
-            >
-              <span
-                className="font-mono font-bold"
-                style={{ color: '#EAECEF' }}
-              >
-                {action.symbol}
-              </span>
-              <span
-                className="px-2 py-0.5 rounded text-xs font-bold"
-                style={
-                  action.action.includes('open')
-                    ? {
-                        background: 'rgba(96, 165, 250, 0.1)',
-                        color: '#60a5fa',
-                      }
-                    : {
-                        background: 'rgba(240, 185, 11, 0.1)',
-                        color: '#F0B90B',
-                      }
-                }
-              >
-                {action.action}
-              </span>
-              {action.leverage > 0 && (
-                <span style={{ color: '#F0B90B' }}>{action.leverage}x</span>
-              )}
-              {action.price > 0 && (
-                <span
-                  className="font-mono text-xs"
-                  style={{ color: '#848E9C' }}
-                >
-                  @{action.price.toFixed(4)}
-                </span>
-              )}
-              <span style={{ color: action.success ? '#0ECB81' : '#F6465D' }}>
-                {action.success ? '✓' : '✗'}
-              </span>
-              {action.error && (
-                <span className="text-xs ml-2" style={{ color: '#F6465D' }}>
-                  {action.error}
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Account State Summary */}
-      {decision.account_state && (
-        <div
-          className="flex gap-4 text-xs mb-3 rounded px-3 py-2"
-          style={{ background: '#0B0E11', color: '#848E9C' }}
-        >
-          <span>
-            净值: {decision.account_state.total_balance.toFixed(2)} USDT
-          </span>
-          <span>
-            可用: {decision.account_state.available_balance.toFixed(2)} USDT
-          </span>
-          <span>
-            保证金率: {decision.account_state.margin_used_pct.toFixed(1)}%
-          </span>
-          <span>持仓: {decision.account_state.position_count}</span>
-          <span
-            style={{
-              color:
-                decision.candidate_coins &&
-                decision.candidate_coins.length === 0
-                  ? '#F6465D'
-                  : '#848E9C',
-            }}
-          >
-            {t('candidateCoins', language)}:{' '}
-            {decision.candidate_coins?.length || 0}
-          </span>
-        </div>
-      )}
-
-      {/* Candidate Coins Warning */}
-      {decision.candidate_coins && decision.candidate_coins.length === 0 && (
-        <div
-          className="text-sm rounded px-4 py-3 mb-3 flex items-start gap-3"
-          style={{
-            background: 'rgba(246, 70, 93, 0.1)',
-            border: '1px solid rgba(246, 70, 93, 0.3)',
-            color: '#F6465D',
-          }}
-        >
-          <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <div className="font-semibold mb-1">
-              ⚠️ {t('candidateCoinsZeroWarning', language)}
-            </div>
-            <div className="text-xs space-y-1" style={{ color: '#848E9C' }}>
-              <div>{t('possibleReasons', language)}</div>
-              <ul className="list-disc list-inside space-y-0.5 ml-2">
-                <li>{t('coinPoolApiNotConfigured', language)}</li>
-                <li>{t('apiConnectionTimeout', language)}</li>
-                <li>{t('noCustomCoinsAndApiFailed', language)}</li>
-              </ul>
-              <div className="mt-2">
-                <strong>{t('solutions', language)}</strong>
-              </div>
-              <ul className="list-disc list-inside space-y-0.5 ml-2">
-                <li>{t('setCustomCoinsInConfig', language)}</li>
-                <li>{t('orConfigureCorrectApiUrl', language)}</li>
-                <li>{t('orDisableCoinPoolOptions', language)}</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Execution Logs */}
-      {decision.execution_log && decision.execution_log.length > 0 && (
-        <div className="space-y-1">
-          {decision.execution_log.map((log, k) => (
-            <div
-              key={k}
-              className="text-xs font-mono"
-              style={{
-                color:
-                  log.includes('✓') || log.includes('成功')
-                    ? '#0ECB81'
-                    : '#F6465D',
-              }}
-            >
-              {log}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Error Message */}
-      {decision.error_message && (
-        <div
-          className="text-sm rounded px-3 py-2 mt-3"
-          style={{ color: '#F6465D', background: 'rgba(246, 70, 93, 0.1)' }}
-        >
-          ❌ {decision.error_message}
         </div>
       )}
     </div>

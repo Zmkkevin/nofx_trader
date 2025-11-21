@@ -476,8 +476,6 @@ type UpdateExchangeConfigRequest struct {
 		AsterUser             string `json:"aster_user"`
 		AsterSigner           string `json:"aster_signer"`
 		AsterPrivateKey       string `json:"aster_private_key"`
-		LighterWalletAddr     string `json:"lighter_wallet_addr"`
-		LighterPrivateKey     string `json:"lighter_private_key"`
 	} `json:"exchanges"`
 }
 
@@ -967,6 +965,121 @@ func (s *Server) handleUpdateTraderPrompt(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "自定义prompt已更新"})
 }
 
+// handleSyncBalance 同步交易所余额到initial_balance（选项B：手动同步 + 选项C：智能检测）
+func (s *Server) handleSyncBalance(c *gin.Context) {
+	userID := c.GetString("user_id")
+	traderID := c.Param("id")
+
+	log.Printf("🔄 用户 %s 请求同步交易员 %s 的余额", userID, traderID)
+
+	// 从数据库获取交易员配置（包含交易所信息）
+	traderConfig, _, exchangeCfg, err := s.database.GetTraderConfig(userID, traderID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	if exchangeCfg == nil || !exchangeCfg.Enabled {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "交易所未配置或未启用"})
+		return
+	}
+
+	// 创建临时 trader 查询余额
+	var tempTrader trader.Trader
+	var createErr error
+
+	switch traderConfig.ExchangeID {
+	case "binance":
+		tempTrader = trader.NewFuturesTrader(exchangeCfg.APIKey, exchangeCfg.SecretKey, userID)
+	case "hyperliquid":
+		tempTrader, createErr = trader.NewHyperliquidTrader(
+			exchangeCfg.APIKey,
+			exchangeCfg.HyperliquidWalletAddr,
+			exchangeCfg.Testnet,
+		)
+	case "aster":
+		tempTrader, createErr = trader.NewAsterTrader(
+			exchangeCfg.AsterUser,
+			exchangeCfg.AsterSigner,
+			exchangeCfg.AsterPrivateKey,
+		)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的交易所类型"})
+		return
+	}
+
+	if createErr != nil {
+		log.Printf("⚠️ 创建临时 trader 失败: %v", createErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("连接交易所失败: %v", createErr)})
+		return
+	}
+
+	// 查询实际余额
+	balanceInfo, balanceErr := tempTrader.GetBalance()
+	if balanceErr != nil {
+		log.Printf("⚠️ 查询交易所余额失败: %v", balanceErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("查询余额失败: %v", balanceErr)})
+		return
+	}
+
+	// ✅ 修复：使用总资产（total equity）而不是可用余额来更新初始余额
+	// 总资产 = 钱包余额 + 未实现盈亏，这样才能正确计算总盈亏
+	var actualBalance float64
+	totalWalletBalance := 0.0
+	totalUnrealizedProfit := 0.0
+
+	if wallet, ok := balanceInfo["totalWalletBalance"].(float64); ok {
+		totalWalletBalance = wallet
+	}
+	if unrealized, ok := balanceInfo["totalUnrealizedProfit"].(float64); ok {
+		totalUnrealizedProfit = unrealized
+	}
+
+	// 总资产 = 钱包余额 + 未实现盈亏
+	actualBalance = totalWalletBalance + totalUnrealizedProfit
+
+	if actualBalance <= 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("无法获取总资产余额 (钱包: %.2f, 未实现: %.2f)", totalWalletBalance, totalUnrealizedProfit)})
+		return
+	}
+
+	oldBalance := traderConfig.InitialBalance
+
+	// ✅ 选项C：智能检测余额变化
+	changePercent := ((actualBalance - oldBalance) / oldBalance) * 100
+	changeType := "增加"
+	if changePercent < 0 {
+		changeType = "减少"
+	}
+
+	log.Printf("✓ 查询到交易所总资产余额: %.2f USDT (钱包: %.2f + 未实现: %.2f, 当前配置: %.2f USDT, 变化: %.2f%%)",
+		actualBalance, totalWalletBalance, totalUnrealizedProfit, oldBalance, changePercent)
+
+	// 更新数据库中的 initial_balance
+	err = s.database.UpdateTraderInitialBalance(userID, traderID, actualBalance)
+	if err != nil {
+		log.Printf("❌ 更新initial_balance失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新余额失败"})
+		return
+	}
+
+	// 重新加载交易员到内存
+	err = s.traderManager.LoadTraderByID(s.database, userID, traderID)
+	if err != nil {
+		log.Printf("⚠️ 重新加载交易员到内存失败: %v", err)
+	}
+
+	log.Printf("✅ 已同步余额: %.2f → %.2f USDT (%s %.2f%%)", oldBalance, actualBalance, changeType, changePercent)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "余额同步成功",
+		"old_balance":    oldBalance,
+		"new_balance":    actualBalance,
+		"change_percent": changePercent,
+		"change_type":    changeType,
+	})
+}
+
 // handleGetModelConfigs 获取AI模型配置
 func (s *Server) handleGetModelConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
@@ -1052,7 +1165,7 @@ func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 	}
 
 	// 重新加载该用户的所有交易员，使新配置立即生效
-	err = s.traderManager.LoadUserTraders(s.database, userID)
+	err = s.traderManager.ReloadUserTraders(s.database, userID)
 	if err != nil {
 		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
 		// 这里不返回错误，因为模型配置已经成功更新到数据库
@@ -1141,7 +1254,7 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 
 	// 更新每个交易所的配置
 	for exchangeID, exchangeData := range req.Exchanges {
-		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey, exchangeData.LighterWalletAddr, exchangeData.LighterPrivateKey)
+		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新交易所 %s 失败: %v", exchangeID, err)})
 			return
@@ -1149,7 +1262,7 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 	}
 
 	// 重新加载该用户的所有交易员，使新配置立即生效
-	err = s.traderManager.LoadUserTraders(s.database, userID)
+	err = s.traderManager.ReloadUserTraders(s.database, userID)
 	if err != nil {
 		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
 		// 这里不返回错误，因为交易所配置已经成功更新到数据库
@@ -1224,12 +1337,12 @@ func (s *Server) handleTraderList(c *gin.Context) {
 		// 返回完整的 AIModelID（如 "admin_deepseek"），不要截断
 		// 前端需要完整 ID 来验证模型是否存在（与 handleGetTraderConfig 保持一致）
 		result = append(result, map[string]interface{}{
-			"trader_id":              trader.ID,
-			"trader_name":            trader.Name,
-			"ai_model":               trader.AIModelID, // 使用完整 ID
-			"exchange_id":            trader.ExchangeID,
-			"is_running":             isRunning,
-			"initial_balance":        trader.InitialBalance,
+			"trader_id":       trader.ID,
+			"trader_name":     trader.Name,
+			"ai_model":        trader.AIModelID, // 使用完整 ID
+			"exchange_id":     trader.ExchangeID,
+			"is_running":      isRunning,
+			"initial_balance": trader.InitialBalance,
 			"system_prompt_template": trader.SystemPromptTemplate,
 		})
 	}
@@ -2157,16 +2270,16 @@ func (s *Server) handlePublicTraderList(c *gin.Context) {
 	result := make([]map[string]interface{}, 0, len(traders))
 	for _, trader := range traders {
 		result = append(result, map[string]interface{}{
-			"trader_id":              trader["trader_id"],
-			"trader_name":            trader["trader_name"],
-			"ai_model":               trader["ai_model"],
-			"exchange":               trader["exchange"],
-			"is_running":             trader["is_running"],
-			"total_equity":           trader["total_equity"],
-			"total_pnl":              trader["total_pnl"],
-			"total_pnl_pct":          trader["total_pnl_pct"],
-			"position_count":         trader["position_count"],
-			"margin_used_pct":        trader["margin_used_pct"],
+			"trader_id":       trader["trader_id"],
+			"trader_name":     trader["trader_name"],
+			"ai_model":        trader["ai_model"],
+			"exchange":        trader["exchange"],
+			"is_running":      trader["is_running"],
+			"total_equity":    trader["total_equity"],
+			"total_pnl":       trader["total_pnl"],
+			"total_pnl_pct":   trader["total_pnl_pct"],
+			"position_count":  trader["position_count"],
+			"margin_used_pct": trader["margin_used_pct"],
 			"system_prompt_template": trader["system_prompt_template"],
 		})
 	}
